@@ -1,0 +1,38 @@
+# Flutter / Dart 构建产物
+/build/
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+*.lock.bak
+
+# Android 工程内的构建产物（android/ 目录本身保留，只忽略其中的产物）
+android/.gradle/
+android/captures/
+android/local.properties
+android/app/debug/
+android/app/profile/
+android/app/release/
+android/key.properties
+*.jks
+*.keystore
+
+# iOS（本方案不出 iOS，但 flutter create 会生成，避免误提）
+ios/Pods/
+ios/.symlinks/
+ios/Flutter/Flutter.framework
+ios/Flutter/Flutter.podspec
+ios/Flutter/ephemeral/
+
+# IDE / 编辑器
+.idea/
+*.iml
+.vscode/
+*.swp
+
+# 系统
+.DS_Store
+
+# 环境与本地配置（AI key 等一律不入仓）
+.env
+.env.*
+!.env.example
