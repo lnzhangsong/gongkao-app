@@ -4,9 +4,9 @@ import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 
 import '../config.dart';
-import '../data/bing_image.dart';
+import '../data/wallpaper_image.dart';
 
-/// 全屏背景：Bing 每日图（高斯模糊）+ 半透明深色蒙版。
+/// 全屏背景：每日壁纸（高斯模糊）+ 半透明深色蒙版。
 /// 未就位时透明，回落 Scaffold 的纯色背景。各页面共用。
 class WallpaperBackground extends StatefulWidget {
   const WallpaperBackground({super.key});
@@ -25,7 +25,7 @@ class _WallpaperBackgroundState extends State<WallpaperBackground> {
   }
 
   Future<void> _load() async {
-    final File? f = await const BingImage().todayImage();
+    final File? f = await const WallpaperImage().todayImage();
     if (!mounted || f == null) return;
     setState(() => _bg = f);
   }

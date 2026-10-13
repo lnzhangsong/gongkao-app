@@ -40,6 +40,7 @@ dependencies:
   http: ^1.6.0
   path_provider: ^2.1.6
   shared_preferences: ^2.5.6
+  fluttertoast: ^10.0.2
 
 dev_dependencies:
   flutter_test:

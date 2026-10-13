@@ -41,6 +41,22 @@ const Map<String, Color> kindColors = <String, Color>{
 
 Color kindColor(String kind) => kindColors[kind] ?? const Color(0xFF6B7280);
 
+/// 全部主题（顺序即界面展示顺序）。
+const List<String> allKinds = <String>['常识', '成语', '时政'];
+
+
+/// 壁纸来源：Bing 图片搜索（免 Key，每日一换），失败时回落 Bing 每日图。
+const String bingImageSearchUrl = 'https://www.bing.com/images/async';
+
+/// Bing 图片 CDN 代理（同 www.bing.com，稳定可达），按 id 取指定尺寸。
+const String bingImageHost = 'https://www.bing.com/th';
+
+/// 壁纸搜索关键词（中式古建）。
+const String wallpaperQuery = 'chinese ancient architecture';
+
+/// 期望的壁纸图宽（px）。Bing CDN 会按此缩放。
+const int wallpaperWidth = 1920;
+
 /// Bing 每日图背景（台历界面）。取 UHD，当日缓存到本地，离线回落纯色。
 const bool useBingWallpaper = true;
 const String bingArchiveUrl =
