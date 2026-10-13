@@ -3,14 +3,15 @@ import 'package:flutter/services.dart';
 import 'package:fluttertoast/fluttertoast.dart';
 
 import 'settings.dart';
+import 'widgets/footprint_page.dart';
 import 'widgets/pad_home.dart';
 import 'widgets/pomodoro_page.dart';
 import 'widgets/settings_page.dart';
 import 'widgets/tools_page.dart';
 
-enum _Screen { calendar, pomodoro, tools, settings }
+enum _Screen { calendar, pomodoro, tools, settings, footprint }
 
-/// 界面对切：台历 ⇄ 番茄钟 ⇄ 计时工具 ⇄ 设置（默认台历）。
+/// 界面对切：台历 ⇄ 番茄钟 ⇄ 计时工具 ⇄ 今日足迹 ⇄ 设置（默认台历）。
 class AppShell extends StatefulWidget {
   const AppShell({super.key, required this.settings});
 
@@ -71,6 +72,9 @@ class _AppShellState extends State<AppShell> {
                       const SizedBox(width: 4),
                       _iconBtn(Icons.timer_outlined, '番茄钟',
                           () => setState(() => _screen = _Screen.pomodoro)),
+                      const SizedBox(width: 4),
+                      _iconBtn(Icons.insights_outlined, '今日足迹',
+                          () => setState(() => _screen = _Screen.footprint)),
                     ],
                   ),
                 ),
@@ -96,6 +100,10 @@ class _AppShellState extends State<AppShell> {
       case _Screen.settings:
         return SettingsPage(
           settings: widget.settings,
+          onBack: () => setState(() => _screen = _Screen.calendar),
+        );
+      case _Screen.footprint:
+        return FootprintPage(
           onBack: () => setState(() => _screen = _Screen.calendar),
         );
     }

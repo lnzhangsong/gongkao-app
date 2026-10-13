@@ -1,6 +1,11 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <!-- 联网：Bing 每日图背景（release 包也需要）。 -->
     <uses-permission android:name="android.permission.INTERNET"/>
+    <!-- 读取系统使用统计（今日足迹）。需在系统设置里手动授予「使用情况访问」特殊权限。 -->
+    <uses-permission
+        android:name="android.permission.PACKAGE_USAGE_STATS"
+        tools:ignore="ProtectedPermissions"
+        xmlns:tools="http://schemas.android.com/tools"/>
     <application
         android:label="考公台历"
         android:name="${applicationName}"
@@ -42,6 +47,11 @@
         <intent>
             <action android:name="android.intent.action.PROCESS_TEXT"/>
             <data android:mimeType="text/plain"/>
+        </intent>
+        <!-- 今日足迹需要按包名解析已安装应用的信息（Android 11+ 包可见性）。 -->
+        <intent>
+            <action android:name="android.intent.action.MAIN"/>
+            <category android:name="android.intent.category.LAUNCHER"/>
         </intent>
     </queries>
 </manifest>
