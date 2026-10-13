@@ -2,9 +2,21 @@ import 'package:flutter/material.dart';
 
 /// 常改项集中在此：考试日期、轮播间隔、断点、番茄时长、音源清单。
 
-/// 目标考试。日期为占位，待用户给定后替换。
-const String examName = '2027 国考';
-final DateTime examDate = DateTime(2027, 11, 28);
+/// 目标考试。日期依据官方公告/历年规律，可随时在此调整。
+/// 国考：2027 年度公共科目笔试 2026-11-29（国家公务员局公告）。
+/// 辽宁省考：参加春季联考，近年笔试均在 3 月中旬周六（2025-03-15、2026-03-14），
+/// 2027 年预计 3 月中旬，此处按 2027-03-13（周六）预填，公告发布后请核对。
+class ExamTarget {
+  const ExamTarget({required this.label, required this.date});
+
+  final String label;
+  final DateTime date;
+}
+
+final List<ExamTarget> examTargets = <ExamTarget>[
+  ExamTarget(label: '2027 国考', date: DateTime(2026, 11, 29)),
+  ExamTarget(label: '2027 辽宁省考', date: DateTime(2027, 3, 13)),
+];
 
 /// 内容卡轮播间隔。
 const Duration cardInterval = Duration(seconds: 30);

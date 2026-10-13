@@ -21,13 +21,16 @@ class DatePane extends StatelessWidget {
         '${lunar.getYearInGanZhi()}${lunar.getYearShengXiao()}年 · '
         '${lunar.getMonthInGanZhi()}月 · ${lunar.getDayInGanZhi()}日';
     final DateTime today = DateTime(now.year, now.month, now.day);
-    final DateTime target =
-        DateTime(examDate.year, examDate.month, examDate.day);
-    final int toExam = target.difference(today).inDays;
+    final List<(String, int)> exams = <(String, int)>[
+      for (final ExamTarget t in examTargets)
+        ('距 ${t.label}', DateTime(t.date.year, t.date.month, t.date.day)
+            .difference(today)
+            .inDays),
+    ];
     final int elapsed = today.difference(DateTime(now.year)).inDays + 1;
 
     if (!twoColumn) {
-      return _portraitHero(now, lunarDay, ganzhi, toExam, elapsed);
+      return _portraitHero(now, lunarDay, ganzhi, exams, elapsed);
     }
     return Column(
       mainAxisSize: MainAxisSize.min,
@@ -60,17 +63,19 @@ class DatePane extends StatelessWidget {
         const SizedBox(height: 26),
         _hairline(),
         const SizedBox(height: 16),
-        _countdownRow('距 $examName', toExam),
-        const SizedBox(height: 12),
+        for (final (String, int) e in exams) ...<Widget>[
+          _countdownRow(e.$1, e.$2),
+          const SizedBox(height: 12),
+        ],
         _countdownRow('今年已过', elapsed),
       ],
     );
   }
 
   /// 竖屏 hero：顶部小标签 + 超大日期 + 农历/干支，整体居中；
-  /// 倒计时做成居中的两个小格（主流倒计时 App 的排布）。
+  /// 倒计时做成居中的小格（每个考试一格 + 今年已过）。
   Widget _portraitHero(DateTime now, String lunarDay, String ganzhi,
-      int toExam, int elapsed) {
+      List<(String, int)> exams, int elapsed) {
     return Column(
       mainAxisSize: MainAxisSize.min,
       crossAxisAlignment: CrossAxisAlignment.center,
@@ -105,8 +110,10 @@ class DatePane extends StatelessWidget {
         const SizedBox(height: 24),
         Row(
           children: <Widget>[
-            Expanded(child: _countdownCell('距 $examName', toExam)),
-            const SizedBox(width: 14),
+            for (final (String, int) e in exams) ...<Widget>[
+              Expanded(child: _countdownCell(e.$1, e.$2)),
+              const SizedBox(width: 12),
+            ],
             Expanded(child: _countdownCell('今年已过', elapsed)),
           ],
         ),
