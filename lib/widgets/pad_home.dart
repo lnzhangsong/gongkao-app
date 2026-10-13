@@ -1,16 +1,14 @@
 import 'dart:async';
-import 'dart:io';
-import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
 
 import '../config.dart';
-import '../data/bing_image.dart';
 import '../data/content_repo.dart';
 import '../data/models.dart';
 import '../settings.dart';
 import 'content_card.dart';
 import 'date_pane.dart';
+import 'wallpaper_background.dart';
 
 /// 台历自适应容器：LayoutBuilder 按宽度分流两栏 / 单栏，内容卡轮播。
 class PadHome extends StatefulWidget {
@@ -27,7 +25,6 @@ class _PadHomeState extends State<PadHome> {
   List<CardItem> _items = <CardItem>[];
   int _index = 0;
   Timer? _timer;
-  File? _bg;
 
   Settings get _settings => widget.settings;
 
@@ -35,10 +32,7 @@ class _PadHomeState extends State<PadHome> {
   void initState() {
     super.initState();
     // 首帧渲染完成后再加载内容，避免大 JSON 解析阻塞首帧导致窗口尺寸异常。
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      _load();
-      _loadBackground();
-    });
+    WidgetsBinding.instance.addPostFrameCallback((_) => _load());
     _restartTimer();
     _settings.addListener(_restartTimer);
   }
@@ -53,12 +47,6 @@ class _PadHomeState extends State<PadHome> {
     final List<CardItem> items = await _repo.load();
     if (!mounted) return;
     setState(() => _items = items);
-  }
-
-  Future<void> _loadBackground() async {
-    final File? f = await const BingImage().todayImage();
-    if (!mounted || f == null) return;
-    setState(() => _bg = f);
   }
 
   void _next() {
@@ -83,7 +71,7 @@ class _PadHomeState extends State<PadHome> {
   Widget build(BuildContext context) {
     return Stack(
       children: <Widget>[
-        Positioned.fill(child: _background()),
+        const Positioned.fill(child: WallpaperBackground()),
         Positioned.fill(
           child: LayoutBuilder(
             builder: (BuildContext context, BoxConstraints constraints) {
@@ -95,25 +83,6 @@ class _PadHomeState extends State<PadHome> {
             },
           ),
         ),
-      ],
-    );
-  }
-
-  /// Bing 每日图（高斯模糊）+ 半透明深色蒙版；未就位时透明（回落纯色背景）。
-  Widget _background() {
-    final File? f = _bg;
-    if (f == null) return const SizedBox.shrink();
-    return Stack(
-      fit: StackFit.expand,
-      children: <Widget>[
-        ImageFiltered(
-          imageFilter: ui.ImageFilter.blur(
-            sigmaX: wallpaperBlur,
-            sigmaY: wallpaperBlur,
-          ),
-          child: Image.file(f, fit: BoxFit.cover, gaplessPlayback: true),
-        ),
-        ColoredBox(color: Colors.black.withValues(alpha: wallpaperScrim)),
       ],
     );
   }

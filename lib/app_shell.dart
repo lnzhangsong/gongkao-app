@@ -4,10 +4,11 @@ import 'settings.dart';
 import 'widgets/pad_home.dart';
 import 'widgets/pomodoro_page.dart';
 import 'widgets/settings_page.dart';
+import 'widgets/tools_page.dart';
 
-enum _Screen { calendar, pomodoro, settings }
+enum _Screen { calendar, pomodoro, tools, settings }
 
-/// 界面对切：台历 ⇄ 番茄钟 ⇄ 设置（默认台历）。
+/// 界面对切：台历 ⇄ 番茄钟 ⇄ 计时工具 ⇄ 设置（默认台历）。
 class AppShell extends StatefulWidget {
   const AppShell({super.key, required this.settings});
 
@@ -36,6 +37,9 @@ class _AppShellState extends State<AppShell> {
                     _iconBtn(Icons.settings_outlined, '设置',
                         () => setState(() => _screen = _Screen.settings)),
                     const SizedBox(width: 4),
+                    _iconBtn(Icons.hourglass_bottom_outlined, '计时工具',
+                        () => setState(() => _screen = _Screen.tools)),
+                    const SizedBox(width: 4),
                     _iconBtn(Icons.timer_outlined, '番茄钟',
                         () => setState(() => _screen = _Screen.pomodoro)),
                   ],
@@ -53,6 +57,10 @@ class _AppShellState extends State<AppShell> {
         return PadHome(settings: widget.settings);
       case _Screen.pomodoro:
         return PomodoroPage(
+          onBack: () => setState(() => _screen = _Screen.calendar),
+        );
+      case _Screen.tools:
+        return ToolsPage(
           onBack: () => setState(() => _screen = _Screen.calendar),
         );
       case _Screen.settings:
