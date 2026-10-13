@@ -40,3 +40,15 @@ const Map<String, Color> kindColors = <String, Color>{
 };
 
 Color kindColor(String kind) => kindColors[kind] ?? const Color(0xFF6B7280);
+
+/// Bing 每日图背景（台历界面）。取 UHD，当日缓存到本地，离线回落纯色。
+const bool useBingWallpaper = true;
+const String bingArchiveUrl =
+    'https://www.bing.com/HPImageArchive.aspx?format=js&idx=0&n=1&mkt=zh-CN';
+
+/// 图片上的半透明深色蒙版不透明度（0..1），保证文字可读。
+const double wallpaperScrim = 0.35;
+
+/// 背景图高斯模糊半径（sigma）。越大越虚化，前景文字越清晰。
+const double wallpaperBlur = 18;
+

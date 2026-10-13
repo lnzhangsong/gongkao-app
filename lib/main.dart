@@ -3,12 +3,15 @@ import 'package:flutter/services.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 
 import 'app_shell.dart';
+import 'settings.dart';
 import 'theme.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
-  runApp(const GongkaoApp());
+  final Settings settings = Settings();
+  await settings.load();
+  runApp(GongkaoApp(settings: settings));
   _keepAwake();
 }
 
@@ -23,7 +26,9 @@ Future<void> _keepAwake() async {
 }
 
 class GongkaoApp extends StatelessWidget {
-  const GongkaoApp({super.key});
+  const GongkaoApp({super.key, required this.settings});
+
+  final Settings settings;
 
   @override
   Widget build(BuildContext context) {
@@ -33,7 +38,7 @@ class GongkaoApp extends StatelessWidget {
       theme: lightTheme,
       darkTheme: darkTheme,
       themeMode: ThemeMode.system,
-      home: const AppShell(),
+      home: AppShell(settings: settings),
     );
   }
 }
