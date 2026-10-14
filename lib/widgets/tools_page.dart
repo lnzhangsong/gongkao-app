@@ -1,12 +1,15 @@
 import 'package:flutter/material.dart';
 
+import '../settings.dart';
+import '../tools/face_pitch.dart';
 import '../tools/tool_states.dart';
 import 'wallpaper_background.dart';
 
 /// 工具页：倒计时 / 秒表。杂志式排版，Bing 模糊底，极简控件。
 class ToolsPage extends StatefulWidget {
-  const ToolsPage({super.key, required this.onBack});
+  const ToolsPage({super.key, required this.settings, required this.onBack});
 
+  final Settings settings;
   final VoidCallback onBack;
 
   @override
@@ -64,9 +67,12 @@ class _ToolsPageState extends State<ToolsPage> {
                         child: PageView(
                           controller: _pc,
                           physics: const PageScrollPhysics(),
-                          children: const <Widget>[
+                          children: <Widget>[
                             _CountdownTab(key: ValueKey<bool>(true)),
-                            _StopwatchTab(key: ValueKey<bool>(false)),
+                            _StopwatchTab(
+                              key: ValueKey<bool>(false),
+                              settings: widget.settings,
+                            ),
                           ],
                         ),
                       ),
@@ -464,7 +470,8 @@ final double _colonWidth = () {
 
 // ---------------- 秒表 ----------------
 class _StopwatchTab extends StatefulWidget {
-  const _StopwatchTab({super.key});
+  const _StopwatchTab({super.key, required this.settings});
+  final Settings settings;
   @override
   State<_StopwatchTab> createState() => _StopwatchTabState();
 }
@@ -472,71 +479,130 @@ class _StopwatchTab extends StatefulWidget {
 class _StopwatchTabState extends State<_StopwatchTab> {
   final StopwatchTimer _w = StopwatchTimer();
 
+  /// 抬头检测：秒表运行且设置里已启用时自动开相机；暂停/停止即释放。
+  final FacePitchMonitor _face = FacePitchMonitor();
+
+  /// 上次是否已应用设置里的基准/阈值，避免重复写入。
+  bool _appliedSettings = false;
+
+  @override
+  void initState() {
+    super.initState();
+    widget.settings.addListener(_onSettings);
+    // 每次抬头自动计一次（与手点「计次」等效，写入 Lap 列表）。
+    _face.onHeadUp = (DateTime at, int? gap) {
+      _w.lap();
+    };
+  }
+
   @override
   void dispose() {
+    widget.settings.removeListener(_onSettings);
+    _face.dispose();
     _w.dispose();
     super.dispose();
+  }
+
+  /// 设置变化：把启用状态/阈值/基准同步到检测器，并按需开关相机。
+  void _onSettings() {
+    _applyFaceSettings();
+    _syncCamera();
+  }
+
+  void _applyFaceSettings() {
+    final Settings s = widget.settings;
+    _face.thresholdDelta.value = s.faceThreshold;
+    final double? b = s.faceBaseline;
+    if (b != null && _face.baseline.value != b) _face.baseline.value = b;
+  }
+
+  /// 秒表运行状态变化时同步相机（仅在启用检测且运行时开）。
+  void _syncCamera() {
+    final bool want = widget.settings.faceEnabled && _w.running;
+    if (want && !_face.active) {
+      _applyFaceSettings();
+      _face.start();
+    } else if (!want && _face.active) {
+      _face.stop();
+    }
   }
 
   @override
   Widget build(BuildContext context) {
     return AnimatedBuilder(
-      animation: _w,
+      animation: Listenable.merge(<Listenable>[_w, widget.settings]),
       builder: (BuildContext context, _) {
-        return Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: <Widget>[
-            const SizedBox(height: 24),
-            _caps('ELAPSED  已用时'),
-            const SizedBox(height: 14),
-            _bigWithMillis(_w.elapsed),
-            const SizedBox(height: 32),
-            SizedBox(
-              width: double.infinity,
-              child: Row(
-                children: <Widget>[
-                  Expanded(
-                    child: _textAction(_w.running ? '暂停' : '开始',
-                        _w.running ? _w.pause : _w.start, primary: true),
-                  ),
-                  const SizedBox(width: 14),
-                  Expanded(
-                    child: _textAction('计次', _w.running ? _w.lap : null),
-                  ),
-                  const SizedBox(width: 14),
-                  Expanded(child: _textAction('重置', _w.reset)),
-                ],
-              ),
-            ),
-            const SizedBox(height: 24),
-            Expanded(
-              child: ListView.builder(
-                itemCount: _w.laps.length,
-                itemBuilder: (BuildContext context, int i) {
-                  final int n = _w.laps.length - i;
-                  return Padding(
-                    padding: const EdgeInsets.symmetric(vertical: 10),
-                    child: Row(
-                      children: <Widget>[
-                        _caps('LAP ${n.toString().padLeft(2, '0')}'),
-                        const Spacer(),
-                        Text(
-                          _fmt(_w.laps[i], withMillis: true),
-                          style: const TextStyle(
-                            fontSize: 20,
-                            color: Colors.white,
-                            fontFeatures: <FontFeature>[
-                              FontFeature.tabularFigures()
-                            ],
-                          ),
-                        ),
-                      ],
+        // 运行态或设置变化时确保相机与之一致。
+        WidgetsBinding.instance.addPostFrameCallback((_) => _syncCamera());
+        if (!_appliedSettings) {
+          _appliedSettings = true;
+          _applyFaceSettings();
+        }
+        return SingleChildScrollView(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: <Widget>[
+              const SizedBox(height: 24),
+              _caps('ELAPSED  已用时'),
+              const SizedBox(height: 14),
+              _bigWithMillis(_w.elapsed),
+              const SizedBox(height: 32),
+              SizedBox(
+                width: double.infinity,
+                child: Row(
+                  children: <Widget>[
+                    Expanded(
+                      child: _textAction(_w.running ? '暂停' : '开始',
+                          _w.running ? _w.pause : _w.start, primary: true),
                     ),
-                  );
-                },
+                    const SizedBox(width: 14),
+                    Expanded(
+                      child: _textAction('计次', _w.running ? _w.lap : null),
+                    ),
+                    const SizedBox(width: 14),
+                    Expanded(child: _textAction('重置', _w.reset)),
+                  ],
+                ),
               ),
-            ),
-          ],
+              const SizedBox(height: 16),
+              for (int i = 0; i < _w.laps.length; i++)
+                Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 10),
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.baseline,
+                    textBaseline: TextBaseline.alphabetic,
+                    children: <Widget>[
+                      _caps('LAP ${(_w.laps.length - i).toString().padLeft(2, '0')}'),
+                      const SizedBox(width: 14),
+                      // 本段用时（距上次计次）为主。
+                      Text(
+                        _fmt(_w.laps[i].segment, withMillis: true),
+                        style: const TextStyle(
+                          fontSize: 22,
+                          color: Colors.white,
+                          fontFeatures: <FontFeature>[
+                            FontFeature.tabularFigures()
+                          ],
+                        ),
+                      ),
+                      const Spacer(),
+                      // 累计用时为次。
+                      Text(
+                        _fmt(_w.laps[i].total, withMillis: true),
+                        style: TextStyle(
+                          fontSize: 14,
+                          color: Colors.white.withValues(alpha: 0.5),
+                          fontFeatures: const <FontFeature>[
+                            FontFeature.tabularFigures()
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              const SizedBox(height: 24),
+            ],
+          ),
         );
       },
     );

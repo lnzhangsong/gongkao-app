@@ -95,6 +95,7 @@ class _AppShellState extends State<AppShell> {
         );
       case _Screen.tools:
         return ToolsPage(
+          settings: widget.settings,
           onBack: () => setState(() => _screen = _Screen.calendar),
         );
       case _Screen.settings:

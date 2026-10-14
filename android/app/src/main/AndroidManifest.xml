@@ -6,6 +6,9 @@
         android:name="android.permission.PACKAGE_USAGE_STATS"
         tools:ignore="ProtectedPermissions"
         xmlns:tools="http://schemas.android.com/tools"/>
+    <!-- 秒表抬头计数：前置摄像头检测人脸俯仰角。运行时向用户请求。 -->
+    <uses-permission android:name="android.permission.CAMERA"/>
+    <uses-feature android:name="android.hardware.camera" android:required="false"/>
     <application
         android:label="考公台历"
         android:name="${applicationName}"

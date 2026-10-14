@@ -79,17 +79,25 @@ class CountdownTimer extends ChangeNotifier {
   }
 }
 
+/// 计次记录：累计用时 + 本段用时（距上一次计次）。
+class Lap {
+  const Lap({required this.total, required this.segment});
+  final Duration total;
+  final Duration segment;
+}
+
 /// 秒表（正计时）：可计圈。
 class StopwatchTimer extends ChangeNotifier {
   Duration _elapsed = Duration.zero;
   DateTime? _startedAt;
   Duration _accumulated = Duration.zero;
   Timer? _ticker;
-  final List<Duration> _laps = <Duration>[];
+  final List<Lap> _laps = <Lap>[];
+  Duration _lastLapTotal = Duration.zero;
 
   Duration get elapsed => _elapsed;
   bool get running => _startedAt != null;
-  List<Duration> get laps => List<Duration>.unmodifiable(_laps);
+  List<Lap> get laps => List<Lap>.unmodifiable(_laps);
 
   @override
   void dispose() {
@@ -121,13 +129,15 @@ class StopwatchTimer extends ChangeNotifier {
     _accumulated = Duration.zero;
     _elapsed = Duration.zero;
     _laps.clear();
+    _lastLapTotal = Duration.zero;
     notifyListeners();
   }
 
-  /// 记一圈（记录当前累计时间）。
+  /// 记一圈（记录累计用时与本段用时）。
   void lap() {
     if (!running) return;
-    _laps.insert(0, _elapsed);
+    _laps.insert(0, Lap(total: _elapsed, segment: _elapsed - _lastLapTotal));
+    _lastLapTotal = _elapsed;
     notifyListeners();
   }
 

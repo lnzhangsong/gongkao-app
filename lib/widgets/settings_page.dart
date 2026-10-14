@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../config.dart';
 import '../settings.dart';
+import '../tools/face_pitch.dart';
 
 /// 设置页：轮播间隔滑块（5–120 秒）+ 主题参与开关。
 class SettingsPage extends StatefulWidget {
@@ -15,6 +16,16 @@ class SettingsPage extends StatefulWidget {
 }
 
 class _SettingsPageState extends State<SettingsPage> {
+  /// 采样用的临时检测器（设置页独立开相机采样，不依赖秒表页）。
+  final FacePitchMonitor _monitor = FacePitchMonitor();
+  bool _sampling = false;
+
+  @override
+  void dispose() {
+    _monitor.dispose();
+    super.dispose();
+  }
+
   @override
   Widget build(BuildContext context) {
     final TextTheme text = Theme.of(context).textTheme;
@@ -69,11 +80,137 @@ class _SettingsPageState extends State<SettingsPage> {
               const SizedBox(height: 8),
               for (final String kind in allKinds)
                 _kindSwitch(kind, widget.settings.isKindEnabled(kind)),
+              const SizedBox(height: 32),
+              Text('秒表抬头计数', style: text.titleLarge),
+              const SizedBox(height: 6),
+              Text('开启后，秒表一启动即用前置摄像头检测抬头并自动计次。'
+                  '画面只在内存分析，不保存、不上传。',
+                  style: text.bodyMedium),
+              const SizedBox(height: 4),
+              SwitchListTile(
+                contentPadding: EdgeInsets.zero,
+                value: widget.settings.faceEnabled,
+                onChanged: (bool v) => widget.settings.setFaceEnabled(v),
+                title: const Text('启用抬头计数'),
+              ),
+              _faceCalibration(text),
+              _faceThresholdSlider(text),
               ],
             ),
           ),
         );
       },
+    );
+  }
+
+  /// 双向采样校准：低头/抬头各采一次，自动定基准与阈值。
+  Widget _faceCalibration(TextTheme text) {
+    final Settings s = widget.settings;
+    final bool on = s.faceEnabled && !_sampling;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: <Widget>[
+        const SizedBox(height: 12),
+        Text('校准', style: text.titleMedium),
+        const SizedBox(height: 4),
+        Text('低头对屏点「采低头」，抬头看时点「采抬头」，各一次即可自动定阈值。',
+            style: text.labelSmall),
+        const SizedBox(height: 8),
+        Row(
+          children: <Widget>[
+            OutlinedButton(
+              onPressed: on ? () => _sample(isUp: false) : null,
+              child: Text('采低头 ${_fmtAngle(s.faceDownAngle)}'),
+            ),
+            const SizedBox(width: 12),
+            OutlinedButton(
+              onPressed: on ? () => _sample(isUp: true) : null,
+              child: Text('采抬头 ${_fmtAngle(s.faceUpAngle)}'),
+            ),
+            const SizedBox(width: 12),
+            TextButton(
+              onPressed: s.faceEnabled ? s.clearFaceBaseline : null,
+              child: const Text('清除'),
+            ),
+          ],
+        ),
+        const SizedBox(height: 4),
+        Text(
+          _sampling
+              ? '采样中…请保持姿态'
+              : (s.faceBaseline == null
+                  ? '尚未校准'
+                  : '基准 ${s.faceBaseline!.toStringAsFixed(1)}° · '
+                      '阈值 ${s.faceThreshold.toStringAsFixed(1)}°'),
+          style: text.bodyMedium,
+        ),
+      ],
+    );
+  }
+
+  static String _fmtAngle(double? v) => v == null ? '—' : '${v.toStringAsFixed(1)}°';
+
+  Future<void> _sample({required bool isUp}) async {
+    setState(() => _sampling = true);
+    try {
+      final double? angle = await _monitor.sampleAvg();
+      if (angle == null) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('未检测到人脸，请正对摄像头后重试')),
+          );
+        }
+        return;
+      }
+      await widget.settings.setFaceSample(up: isUp ? angle : null, down: isUp ? null : angle);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('已记录${isUp ? '抬头' : '低头'}角度：${angle.toStringAsFixed(1)}°')),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _sampling = false);
+    }
+  }
+
+  /// 抬头判定阈值滑块（相对基准角的抬升量）。
+  Widget _faceThresholdSlider(TextTheme text) {
+    final double th = widget.settings.faceThreshold;
+    final bool on = widget.settings.faceEnabled;
+    return Opacity(
+      opacity: on ? 1 : 0.4,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: <Widget>[
+          const SizedBox(height: 12),
+          Text('判定阈值：${th.toStringAsFixed(1)}°', style: text.bodyMedium),
+          const SizedBox(height: 4),
+          Text('抬头角度需超过「基准 + 阈值」才计一次。调大更稳、调小更灵。',
+              style: text.labelSmall),
+          Row(
+            children: <Widget>[
+              Text('${Settings.minFaceThreshold.round()}°',
+                  style: text.labelSmall),
+              Expanded(
+                child: Slider(
+                  value: th,
+                  min: Settings.minFaceThreshold,
+                  max: Settings.maxFaceThreshold,
+                  divisions:
+                      (Settings.maxFaceThreshold - Settings.minFaceThreshold)
+                          .round(),
+                  label: '${th.toStringAsFixed(1)}°',
+                  onChanged: on
+                      ? (double v) => widget.settings.setFaceThreshold(v)
+                      : null,
+                ),
+              ),
+              Text('${Settings.maxFaceThreshold.round()}°',
+                  style: text.labelSmall),
+            ],
+          ),
+        ],
+      ),
     );
   }
 

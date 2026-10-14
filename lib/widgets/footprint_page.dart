@@ -76,7 +76,7 @@ class _FootprintPageState extends State<FootprintPage>
                       _back(),
                       const SizedBox(height: 16),
                       _title(),
-                      if (_authorized && !_loading) ...<Widget>[
+                      if (!_loading) ...<Widget>[
                         const SizedBox(height: 14),
                         _tabBar(),
                       ],
