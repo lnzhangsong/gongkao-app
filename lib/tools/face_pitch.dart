@@ -75,6 +75,12 @@ class FacePitchMonitor {
 
   DateTime? _lastEventAt;
 
+  /// 首次上穿阈值的时刻；需连续保持抬头到 [holdDuration] 才计次。
+  DateTime? _risingSince;
+
+  /// 需连续保持抬头多久才计一次（去抖，避免瞬时抖动误计）。由设置注入。
+  Duration holdDuration = const Duration(seconds: 2);
+
   /// 每次抬头计数的回调（用于外部持久化）。参数为时刻与与上次的间隔。
   void Function(DateTime at, int? gapMillis)? onHeadUp;
 
@@ -129,6 +135,7 @@ class FacePitchMonitor {
     faceFound.value = false;
     pitch.value = null;
     headUp.value = false;
+    _risingSince = null;
   }
 
   /// 独立采样：临时开相机，采集约 [duration] 内的多帧人脸俯仰角并取平均。
@@ -159,6 +166,7 @@ class FacePitchMonitor {
     events.value = <HeadUpEvent>[];
     headUp.value = false;
     _lastEventAt = null;
+    _risingSince = null;
   }
 
   Future<void> _onFrame(CameraImage image) async {
@@ -194,19 +202,28 @@ class FacePitchMonitor {
     }
   }
 
-  /// 依据基准角与阈值判定抬头，并在上升沿计数。
+  /// 依据基准角与阈值判定抬头；需连续保持抬头达 [holdDuration] 才计一次。
   void _evaluate(double p) {
     final double? base = baseline.value;
     if (base == null) return; // 未校准不计。
     final double delta = thresholdDelta.value;
     final double upLine = base + delta;
     final double downLine = base + delta - _hysteresis;
-    if (!headUp.value && p >= upLine) {
-      headUp.value = true;
-      _record();
-    } else if (headUp.value && p <= downLine) {
-      headUp.value = false;
+    final DateTime now = DateTime.now();
+    if (p >= upLine) {
+      // 进入/保持抬头态：从首次上穿起计时，满 holdDuration 才计。
+      _risingSince ??= now;
+      if (!headUp.value &&
+          now.difference(_risingSince!) >= holdDuration) {
+        headUp.value = true;
+        _record();
+      }
+    } else if (p <= downLine) {
+      // 掉回低头：作废本次，重新等待。
+      if (headUp.value) headUp.value = false;
+      _risingSince = null;
     }
+    // 中间区（回滞带内）保持现状，避免抖动。
   }
 
   void _record() {

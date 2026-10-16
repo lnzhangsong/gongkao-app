@@ -512,6 +512,7 @@ class _StopwatchTabState extends State<_StopwatchTab> {
   void _applyFaceSettings() {
     final Settings s = widget.settings;
     _face.thresholdDelta.value = s.faceThreshold;
+    _face.holdDuration = s.faceHold;
     final double? b = s.faceBaseline;
     if (b != null && _face.baseline.value != b) _face.baseline.value = b;
   }

@@ -95,6 +95,7 @@ class _SettingsPageState extends State<SettingsPage> {
               ),
               _faceCalibration(text),
               _faceThresholdSlider(text),
+              _faceHoldSlider(text),
               ],
             ),
           ),
@@ -207,6 +208,44 @@ class _SettingsPageState extends State<SettingsPage> {
               ),
               Text('${Settings.maxFaceThreshold.round()}°',
                   style: text.labelSmall),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// 需连续保持抬头多久才计一次（去抖）。
+  Widget _faceHoldSlider(TextTheme text) {
+    final int hold = widget.settings.faceHoldSeconds;
+    final bool on = widget.settings.faceEnabled;
+    return Opacity(
+      opacity: on ? 1 : 0.4,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: <Widget>[
+          const SizedBox(height: 12),
+          Text('保持时长：$hold 秒', style: text.bodyMedium),
+          const SizedBox(height: 4),
+          Text('需连续保持抬头达该时长才计一次，防止抖动误计。', style: text.labelSmall),
+          Row(
+            children: <Widget>[
+              Text('${Settings.minFaceHoldSeconds}s', style: text.labelSmall),
+              Expanded(
+                child: Slider(
+                  value: hold.toDouble(),
+                  min: Settings.minFaceHoldSeconds.toDouble(),
+                  max: Settings.maxFaceHoldSeconds.toDouble(),
+                  divisions: Settings.maxFaceHoldSeconds -
+                      Settings.minFaceHoldSeconds,
+                  label: '$hold s',
+                  onChanged: on
+                      ? (double v) =>
+                          widget.settings.setFaceHoldSeconds(v.round())
+                      : null,
+                ),
+              ),
+              Text('${Settings.maxFaceHoldSeconds}s', style: text.labelSmall),
             ],
           ),
         ],

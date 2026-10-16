@@ -13,6 +13,7 @@ class Settings extends ChangeNotifier {
   static const String _kFaceBaseline = 'face_baseline';
   static const String _kFaceUpAngle = 'face_up_angle';
   static const String _kFaceDownAngle = 'face_down_angle';
+  static const String _kFaceHoldSeconds = 'face_hold_seconds';
 
   int _intervalSeconds = cardInterval.inSeconds;
   int get intervalSeconds => _intervalSeconds;
@@ -35,6 +36,11 @@ class Settings extends ChangeNotifier {
   double? get faceUpAngle => _faceUpAngle;
   double? _faceDownAngle;
   double? get faceDownAngle => _faceDownAngle;
+
+  /// 需连续保持抬头多久才计一次（秒）。去抖，避免瞬时抖动误计。
+  int _faceHoldSeconds = 2;
+  int get faceHoldSeconds => _faceHoldSeconds;
+  Duration get faceHold => Duration(seconds: _faceHoldSeconds);
 
   /// 参与轮播的主题集合。空集合视为全部参与（兜底）。
   final Set<String> _enabledKinds = <String>{...allKinds};
@@ -72,6 +78,8 @@ class Settings extends ChangeNotifier {
     _faceBaseline = prefs.getDouble(_kFaceBaseline);
     _faceUpAngle = prefs.getDouble(_kFaceUpAngle);
     _faceDownAngle = prefs.getDouble(_kFaceDownAngle);
+    final int? hold = prefs.getInt(_kFaceHoldSeconds);
+    if (hold != null) _faceHoldSeconds = hold.clamp(minFaceHoldSeconds, maxFaceHoldSeconds);
     _normalizeCurrentKind();
     notifyListeners();
   }
@@ -80,12 +88,25 @@ class Settings extends ChangeNotifier {
   static const double minFaceThreshold = 1;
   static const double maxFaceThreshold = 20;
 
+  /// 保持抬头时长可选范围（秒）。
+  static const int minFaceHoldSeconds = 1;
+  static const int maxFaceHoldSeconds = 10;
+
   Future<void> setFaceEnabled(bool on) async {
     if (on == _faceEnabled) return;
     _faceEnabled = on;
     notifyListeners();
     final SharedPreferences prefs = await SharedPreferences.getInstance();
     await prefs.setBool(_kFaceEnabled, on);
+  }
+
+  Future<void> setFaceHoldSeconds(int seconds) async {
+    final int v = seconds.clamp(minFaceHoldSeconds, maxFaceHoldSeconds);
+    if (v == _faceHoldSeconds) return;
+    _faceHoldSeconds = v;
+    notifyListeners();
+    final SharedPreferences prefs = await SharedPreferences.getInstance();
+    await prefs.setInt(_kFaceHoldSeconds, v);
   }
 
   Future<void> setFaceThreshold(double deg) async {
