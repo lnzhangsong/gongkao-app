@@ -1,12 +1,17 @@
 package com.gongkao.gongkao_pad
 
+import android.app.ActivityManager
 import android.app.AppOpsManager
+import android.app.admin.DevicePolicyManager
 import android.app.usage.UsageEvents
 import android.app.usage.UsageStatsManager
+import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Build
+import android.os.PowerManager
 import android.os.Process
 import android.provider.Settings
 import io.flutter.embedding.android.FlutterActivity
@@ -16,6 +21,10 @@ import java.util.Calendar
 
 class MainActivity : FlutterActivity() {
     private val channel = "com.gongkao.gongkao_pad/usage"
+    private val kioskChannel = "com.gongkao.gongkao_pad/kiosk"
+    private val kioskAdmin: ComponentName by lazy {
+        ComponentName(this, KioskAdminReceiver::class.java)
+    }
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
@@ -32,6 +41,233 @@ class MainActivity : FlutterActivity() {
                     else -> result.notImplemented()
                 }
             }
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, kioskChannel)
+            .setMethodCallHandler { call, result ->
+                when (call.method) {
+                    "status" -> result.success(kioskStatus())
+                    "start" -> {
+                        requestNotificationPermissionIfNeeded()
+                        result.success(enterKiosk())
+                    }
+                    "stop" -> {
+                        exitKiosk()
+                        result.success(true)
+                    }
+                    "isActive" -> result.success(isLockTaskActive())
+                    "sync" -> {
+                        syncConfig(call.argument<Boolean>("enabled") ?: false,
+                            call.argument<Boolean>("autoStart") ?: true,
+                            call.argument<List<String>>("periods") ?: emptyList(),
+                            call.argument<Long>("skipAt") ?: 0L,
+                            call.argument<Long>("skipUntil") ?: 0L)
+                        result.success(kioskStatus())
+                    }
+                    "openOverlaySettings" -> {
+                        openOverlaySettings()
+                        result.success(null)
+                    }
+                    "openBatterySettings" -> {
+                        openBatterySettings()
+                        result.success(null)
+                    }
+                    "openSecuritySettings" -> {
+                        openSecuritySettings()
+                        result.success(null)
+                    }
+                    "openFullScreenSettings" -> {
+                        KioskNotifier.openFullScreenSettings(this)
+                        result.success(null)
+                    }
+                    "deviceOwnerCommand" -> result.success(DEVICE_OWNER_COMMAND)
+                    else -> result.notImplemented()
+                }
+            }
+    }
+
+    // ── 系统级锁定（lock task / 屏幕固定） ──────────────────────────────
+
+    private fun isDeviceOwner(): Boolean = try {
+        val dpm = getSystemService(Context.DEVICE_POLICY_SERVICE) as DevicePolicyManager
+        dpm.isDeviceOwnerApp(packageName)
+    } catch (e: Exception) {
+        false
+    }
+
+    private fun isLockTaskActive(): Boolean = try {
+        val am = getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            am.lockTaskModeState != ActivityManager.LOCK_TASK_MODE_NONE
+        } else {
+            @Suppress("DEPRECATION")
+            am.isInLockTaskMode
+        }
+    } catch (e: Exception) {
+        false
+    }
+
+    /** 进入系统锁定：锁定期间通知栏 / 控制中心 / 返回桌面全部被系统拦下。 */
+    private fun enterKiosk(): Boolean {
+        return try {
+            if (isLockTaskActive()) return true
+            if (isDeviceOwner()) {
+                val dpm = getSystemService(Context.DEVICE_POLICY_SERVICE) as DevicePolicyManager
+                dpm.setLockTaskPackages(kioskAdmin, arrayOf(packageName))
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                    dpm.setLockTaskFeatures(kioskAdmin, DevicePolicyManager.LOCK_TASK_FEATURE_NONE)
+                }
+            }
+            startLockTask()
+            KioskSchedule.lockedEnd(KioskPrefs(this), System.currentTimeMillis())
+                ?.let { LockGuardService.start(this) }
+            true
+        } catch (e: Exception) {
+            false
+        }
+    }
+
+    private fun exitKiosk() {
+        try {
+            if (isLockTaskActive()) stopLockTask()
+        } catch (e: Exception) {
+            // 忽略：已被系统解除固定时 stopLockTask 会抛异常。
+        }
+        LockGuardService.stop(this)
+    }
+
+    /** Dart 侧把最新配置同步给原生，供开机广播与守护服务判断。 */
+    private fun syncConfig(
+        enabled: Boolean,
+        autoStart: Boolean,
+        periods: List<String>,
+        skipAt: Long,
+        skipUntil: Long
+    ) {
+        val prefs = KioskPrefs(this)
+        prefs.enabled = enabled
+        prefs.autoStart = autoStart
+        prefs.skipAt = skipAt
+        prefs.skipUntil = skipUntil
+        prefs.periods = periods.mapNotNull { raw ->
+            val parts = raw.split('-')
+            if (parts.size != 2) return@mapNotNull null
+            val a = parts[0].toIntOrNull() ?: return@mapNotNull null
+            val b = parts[1].toIntOrNull() ?: return@mapNotNull null
+            intArrayOf(a, b)
+        }
+        // 非锁定期不要把守护服务留在后台。
+        if (!enabled) LockGuardService.stop(this)
+        // 配置一变就重排「下一段开始」的闹钟（含放行 skipUntil 的变化）。
+        KioskAlarms.schedule(this)
+    }
+
+    private fun kioskStatus(): Map<String, Any> = mapOf(
+        "supported" to true,
+        "deviceOwner" to isDeviceOwner(),
+        "active" to isLockTaskActive(),
+        "pinningEnabled" to isPinningEnabled(),
+        "overlay" to Settings.canDrawOverlays(this),
+        "batteryOk" to isIgnoringBattery(),
+        "notifications" to hasNotificationPermission(),
+        // Android 14+ 可被单独关掉；关掉后到点只能弹横幅，拉不起全屏界面。
+        "fullScreenIntent" to KioskNotifier.canUseFullScreen(this)
+    )
+
+    private fun isPinningEnabled(): Boolean = try {
+        Settings.Secure.getInt(contentResolver, "lock_to_app_enabled", 0) == 1
+    } catch (e: Exception) {
+        false
+    }
+
+    private fun isIgnoringBattery(): Boolean = try {
+        val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
+        pm.isIgnoringBatteryOptimizations(packageName)
+    } catch (e: Exception) {
+        false
+    }
+
+    private fun hasNotificationPermission(): Boolean =
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) ==
+                PackageManager.PERMISSION_GRANTED
+        } else {
+            true
+        }
+
+    private fun requestNotificationPermissionIfNeeded() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return
+        if (hasNotificationPermission()) return
+        try {
+            requestPermissions(arrayOf(android.Manifest.permission.POST_NOTIFICATIONS), 7101)
+        } catch (e: Exception) {
+            // 拒绝也不影响锁定本身，只是看不到守护通知。
+        }
+    }
+
+    private fun openOverlaySettings() {
+        val intent = Intent(
+            Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+            Uri.parse("package:$packageName")
+        )
+        try {
+            startActivity(intent)
+        } catch (e: Exception) {
+            startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION))
+        }
+    }
+
+    private fun openBatterySettings() {
+        val direct = Intent(
+            Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
+            Uri.parse("package:$packageName")
+        )
+        try {
+            startActivity(direct)
+        } catch (e: Exception) {
+            try {
+                startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
+            } catch (e2: Exception) {
+                // 忽略
+            }
+        }
+    }
+
+    private fun openSecuritySettings() {
+        try {
+            startActivity(Intent(Settings.ACTION_SECURITY_SETTINGS))
+        } catch (e: Exception) {
+            try {
+                startActivity(
+                    Intent(
+                        Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                        Uri.parse("package:$packageName")
+                    )
+                )
+            } catch (e2: Exception) {
+                // 忽略
+            }
+        }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        AppForeground.alive = true
+        // 界面已经到前台了，撤掉「锁定开始」那条全屏通知，避免常驻。
+        KioskNotifier.cancel(this)
+    }
+
+    override fun onPause() {
+        AppForeground.alive = false
+        super.onPause()
+    }
+
+    override fun onDestroy() {
+        AppForeground.alive = false
+        super.onDestroy()
+    }
+
+    companion object {
+        const val DEVICE_OWNER_COMMAND =
+            "adb shell dpm set-device-owner com.gongkao.gongkao_pad/.KioskAdminReceiver"
     }
 
     /** 是否已授予「使用情况访问」特殊权限。 */

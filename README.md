@@ -25,8 +25,50 @@
   （去抖），写入秒表计次列表（显示本段用时）。设置页可开关、双向采样校准（低头/抬头各采一次
   自动定阈值）、判定阈值与保持时长微调。画面只在内存分析，不保存、不上传。
 - **今日足迹**：读系统使用统计，展示当天 App 使用总览与**时间线**（需授予「使用情况访问」权限）。
-- **响应式**：平板横屏两栏 / 手机竖屏单栏，一套代码自适应。
-- **返回键**：子页先回台历；台历页两秒内连按两次才退出。
+- **响应式**：平板横屏两栏 / 手机竖屏单栏，一套代码自适应。按宽度（`wideBreakpoint`
+  = 720dp）分流两端：**平板保留全部功能**；**手机隐藏全部功能**，只保留「按时锁定手机」
+  （见下）。
+- **按时锁定手机（仅手机端）**：设定几点开始锁、几点解锁，可加多段、可跨午夜
+  （如 22:00 → 次日 06:00）、可选「全天」。到点后自动切成全屏锁屏，显示到解锁时刻的
+  倒计时，期间只有「提前解锁本次」一个出口（放行到本段结束，下一段照常）。
+  放行的作用域是**按下那一刻已经在跑的段**（也就是眼前这次连续锁定），之后才开始的新段
+  不受影响——所以上一段的放行不会把下一段一起吞掉；重叠的两段同时生效时按一下能真正放出来。
+  放行后首页状态卡会多出一个**「再次锁定」**按钮：点一下撤销放行，当前段内立刻锁回去
+  （不必等下一次时段开始）。放行期间**改时段不会撤销放行**（否则一保存就被锁回去，设置没法改），
+  放行截止会按新时段重算：仍只覆盖按下那一刻已经开始的段。配置存
+  `shared_preferences`。时间用**自绘滚轮**选（时 / 分两列 + 整点快捷），不用 Material 的
+  24 小时表盘——后者在 390dp 宽度上会把 00–11 与 12–23 叠成两圈、数字互相挤压且按钮是英文。
+- **系统级锁定（四层防线）**：只做应用内全屏挡不住系统手势，所以：
+  1. **屏幕固定**：锁定期调用 Android `startLockTask()`，通知栏、控制中心、返回桌面
+     （HOME 意图 `error 101`）全部被系统拦下，实测 `mLockTaskModeState=PINNED`；
+  2. **后台守护**：`LockGuardService` 前台服务每 2 秒核对一次，应用被切走就拉回前台；
+     需要「显示在其他应用上层」权限（Android 10+ 后台启动 Activity 的豁免条件）；
+  3. **开机自启**：`BootReceiver` 监听 `BOOT_COMPLETED`，锁定期内无条件拉起并锁定，
+     重启不再是逃生门；非锁定期按「开机自启」开关决定是否拉起（Android 10+ 同样依赖
+     悬浮窗权限）。原生侧 `KioskSchedule` 复刻了 Dart 的时段判定，Flutter 未起来也能判断。
+  4. **到点唤醒**：守护服务只在锁定期内运行，段一结束就 `stopSelf` 收工（放行时也会停），
+     单靠 Flutter 心跳的话「下一段」在应用被冻结 / 划掉后就不来了。所以每次配置变化、
+     服务收工、开机、闹钟触发都用 `KioskAlarms` 把**下一段的开始时刻**排进 `AlarmManager`
+     （精确闹钟；拿不到「闹钟和提醒」权限时退化成 `setAlarmClock`），到点由
+     `LockAlarmReceiver` 拉起服务与界面并重排下一次。
+  5. **退出应用也拦不住**：闹钟挂在系统 `AlarmManager` 上，与 Flutter 进程无关——从最近
+     任务划掉、进程被回收、应用崩溃都不影响，到点系统照样拉起。唯一会连闹钟一起清空的是
+     「设置 → 应用 → 强行停止」（含 `adb shell am force-stop`），之后必须重新打开一次应用
+     （同时解除 stopped 状态并重排闹钟）。小米 HyperOS 上还需两项同时为 `allow`：应用级
+     **自启动**（`MIUIOP 10008`）与 **后台弹出界面**（**`MIUIOP 10021`**，不是 10020——名字
+     更像的那个实测无效）——每次装包都可能被重置回拒绝，`scripts/build_and_install.sh`
+     已做到安装后自动补回并加入 Doze 白名单。装包 / 重启后想确认，跑
+     `bash scripts/check_kiosk_health.sh`；想端到端试一次「到点能不能自己锁上」，跑
+     `bash scripts/check_kiosk_health.sh --test`（排一个 30 秒后的测试闹钟，把应用切后台
+     再等它自己弹回来，不动你已设的时段）。
+  可选**严格模式**：`adb shell dpm set-device-owner com.gongkao.gongkao_pad/.KioskAdminReceiver`
+  把应用设为设备所有者后，`setLockTaskFeatures(NONE)` 让锁定期间完全无法退出。
+- **设置独立成页**：手机首页只显示时钟 + 锁定状态 + 入口，开关 / 时段 / 强度全部收进
+  `LockSettingsPage`；平板设置页也从同一个页面进入，两端共用同一个 `Settings` 实例，
+  任一端改动立刻同步。
+  截图：`docs/phone-lock-settings.png`（锁定设置）、`docs/phone-lock-period.png`（时段编辑）、
+  `docs/phone-lock-time.png`（滚轮选时）、`docs/phone-lock-locked.png`（锁屏态）。
+- **返回键**：手机端锁定中按返回只提示剩余时间；子页先回台历；台历页两秒内连按两次才退出。
 
 ## 与主站的关系
 
@@ -49,7 +91,15 @@ node scripts/sync_data.mjs        # 从 ../gongkao/data/ 镜像内容
 flutter run                       # 调试
 flutter analyze                   # 静态检查
 flutter build apk --release       # 出 apk
+
+bash scripts/build_and_install.sh # 出包 → 装到已连手机 → 启动 → 清理守护进程
+bash scripts/clean_daemons.sh     # 只清理：停 Gradle / Kotlin 守护进程与 adb server
 ```
+
+> **构建后的收尾**：`flutter build` 会留下 Gradle / Kotlin 守护进程（各占几百 MB 内存）和
+> adb server，必须手动关。`scripts/build_and_install.sh` 把「构建 → 安装 → 清理」串成一条命令，
+> 收尾自动调用 `clean_daemons.sh`。想彻底不产生 Gradle 守护进程，可在
+> `android/gradle.properties` 加一行 `org.gradle.daemon=false`（代价：每次构建多等十几秒）。
 
 > 「今日足迹」需在设备「设置 → 应用 → 特殊权限 → 使用情况访问」里手动授予本应用权限；
 > 未授权时页面会给出「去授权」入口。数据仅在本机展示，不上传。

@@ -9,7 +9,10 @@ import '../data/wallpaper_image.dart';
 /// 全屏背景：每日壁纸（高斯模糊）+ 半透明深色蒙版。
 /// 未就位时透明，回落 Scaffold 的纯色背景。各页面共用。
 class WallpaperBackground extends StatefulWidget {
-  const WallpaperBackground({super.key});
+  const WallpaperBackground({super.key, this.boost = 0});
+
+  /// 在全局蒙版之上再压暗一点，保证手机端小字在亮色壁纸上也读得清。
+  final double boost;
 
   @override
   State<WallpaperBackground> createState() => _WallpaperBackgroundState();
@@ -44,7 +47,11 @@ class _WallpaperBackgroundState extends State<WallpaperBackground> {
           ),
           child: Image.file(f, fit: BoxFit.cover, gaplessPlayback: true),
         ),
-        ColoredBox(color: Colors.black.withValues(alpha: wallpaperScrim)),
+        ColoredBox(
+          color: Colors.black.withValues(
+            alpha: (wallpaperScrim + widget.boost).clamp(0.0, 0.92),
+          ),
+        ),
       ],
     );
   }

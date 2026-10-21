@@ -2,6 +2,7 @@ import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'config.dart';
+import 'lock_schedule.dart';
 
 /// 应用设置（持久化到 shared_preferences）。
 class Settings extends ChangeNotifier {
@@ -14,6 +15,11 @@ class Settings extends ChangeNotifier {
   static const String _kFaceUpAngle = 'face_up_angle';
   static const String _kFaceDownAngle = 'face_down_angle';
   static const String _kFaceHoldSeconds = 'face_hold_seconds';
+  static const String _kLockEnabled = 'lock_enabled';
+  static const String _kLockPeriods = 'lock_periods';
+  static const String _kLockSkipUntil = 'lock_skip_until';
+  static const String _kLockSkipAt = 'lock_skip_at';
+  static const String _kLockAutoStart = 'lock_auto_start';
 
   int _intervalSeconds = cardInterval.inSeconds;
   int get intervalSeconds => _intervalSeconds;
@@ -41,6 +47,29 @@ class Settings extends ChangeNotifier {
   int _faceHoldSeconds = 2;
   int get faceHoldSeconds => _faceHoldSeconds;
   Duration get faceHold => Duration(seconds: _faceHoldSeconds);
+
+  /// 按时锁定手机（仅手机端生效，平板端不受影响）。
+  bool _lockEnabled = false;
+  bool get lockEnabled => _lockEnabled;
+
+  /// 锁定时段列表。默认给一段 08:00–12:00 作示例，用户可增删改。
+  List<LockPeriod> _lockPeriods = <LockPeriod>[
+    const LockPeriod(start: 8 * 60, end: 12 * 60),
+  ];
+  List<LockPeriod> get lockPeriods => List<LockPeriod>.unmodifiable(_lockPeriods);
+
+  /// 本次提前解锁的有效期（到该时刻前不锁）。null 表示无。
+  DateTime? _lockSkipUntil;
+  DateTime? get lockSkipUntil => _lockSkipUntil;
+
+  /// 按下「提前解锁」的时刻。放行只作用于这一刻**已经开始的段**，
+  /// 之后才开始的新段照常锁（否则上一段会把下一段一起吞掉）。
+  DateTime? _lockSkipAt;
+  DateTime? get lockSkipAt => _lockSkipAt;
+
+  /// 开机自启：开机后自动拉起应用（锁定期内则无条件拉起并锁定）。
+  bool _lockAutoStart = true;
+  bool get lockAutoStart => _lockAutoStart;
 
   /// 参与轮播的主题集合。空集合视为全部参与（兜底）。
   final Set<String> _enabledKinds = <String>{...allKinds};
@@ -80,6 +109,25 @@ class Settings extends ChangeNotifier {
     _faceDownAngle = prefs.getDouble(_kFaceDownAngle);
     final int? hold = prefs.getInt(_kFaceHoldSeconds);
     if (hold != null) _faceHoldSeconds = hold.clamp(minFaceHoldSeconds, maxFaceHoldSeconds);
+    _lockEnabled = prefs.getBool(_kLockEnabled) ?? false;
+    final List<String>? rawPeriods = prefs.getStringList(_kLockPeriods);
+    if (rawPeriods != null) {
+      _lockPeriods = <LockPeriod>[
+        for (final String raw in rawPeriods) ?LockPeriod.parse(raw),
+      ];
+    }
+    // 放行按「段实例」记录：skipUntil 是这一段结束，skipStart 是这一段开始。
+    // 只有带 skipStart 的记录才作数——旧版只有时间窗的记录无法区分重叠段，直接丢弃。
+    final int? skip = prefs.getInt(_kLockSkipUntil);
+    final int? skipAt = prefs.getInt(_kLockSkipAt);
+    if (skip != null && skipAt != null) {
+      final DateTime until = DateTime.fromMillisecondsSinceEpoch(skip);
+      if (until.isAfter(DateTime.now())) {
+        _lockSkipUntil = until;
+        _lockSkipAt = DateTime.fromMillisecondsSinceEpoch(skipAt);
+      }
+    }
+    _lockAutoStart = prefs.getBool(_kLockAutoStart) ?? true;
     _normalizeCurrentKind();
     notifyListeners();
   }
@@ -190,6 +238,122 @@ class Settings extends ChangeNotifier {
     notifyListeners();
     final SharedPreferences prefs = await SharedPreferences.getInstance();
     await prefs.setString(_kCurrentKind, kind);
+  }
+
+  /// 开关按时锁定。
+  Future<void> setLockEnabled(bool on) async {
+    if (on == _lockEnabled) return;
+    _lockEnabled = on;
+    if (!on) {
+      _lockSkipUntil = null;
+      _lockSkipAt = null;
+    }
+    notifyListeners();
+    final SharedPreferences prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_kLockEnabled, on);
+    if (!on) {
+      await prefs.remove(_kLockSkipUntil);
+      await prefs.remove(_kLockSkipAt);
+    }
+  }
+
+  /// 新增一段：接在最后一段之后，默认 4 小时（环形不越过一天）。
+  Future<void> addLockPeriod() async {
+    final int start = _lockPeriods.isEmpty ? 8 * 60 : _lockPeriods.last.end;
+    _lockPeriods = <LockPeriod>[
+      ..._lockPeriods,
+      LockPeriod(start: start, end: (start + 4 * 60) % kDayMinutes),
+    ];
+    await _saveLockPeriods();
+  }
+
+  /// 改某一段的开始或结束时刻（分钟数）。
+  Future<void> setLockPeriod(int index, LockPeriod period) async {
+    if (index < 0 || index >= _lockPeriods.length) return;
+    final List<LockPeriod> next = List<LockPeriod>.of(_lockPeriods);
+    next[index] = period;
+    _lockPeriods = next;
+    await _saveLockPeriods();
+  }
+
+  Future<void> removeLockPeriod(int index) async {
+    if (index < 0 || index >= _lockPeriods.length) return;
+    final List<LockPeriod> next = List<LockPeriod>.of(_lockPeriods)
+      ..removeAt(index);
+    _lockPeriods = next;
+    await _saveLockPeriods();
+  }
+
+  /// 开关「开机自启」。
+  Future<void> setLockAutoStart(bool on) async {
+    if (on == _lockAutoStart) return;
+    _lockAutoStart = on;
+    notifyListeners();
+    final SharedPreferences prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_kLockAutoStart, on);
+  }
+
+  /// 记录「本次提前解锁」：从 [at] 这一刻起，放过当时已经在跑的段，直到 [until]。
+  ///
+  /// 必须带上按下时刻——放行只作用于**已经开始的段**；只记结束时刻的话，
+  /// 之后才开始（甚至与当前段重叠）的下一段会被一起放行。
+  Future<void> setLockSkip({required DateTime at, required DateTime until}) async {
+    _lockSkipAt = at;
+    _lockSkipUntil = until;
+    notifyListeners();
+    final SharedPreferences prefs = await SharedPreferences.getInstance();
+    await prefs.setInt(_kLockSkipAt, at.millisecondsSinceEpoch);
+    await prefs.setInt(_kLockSkipUntil, until.millisecondsSinceEpoch);
+  }
+
+  /// 撤销「本次提前解锁」：当前若仍在锁定时段内，会立刻重新锁上。
+  Future<void> clearLockSkip() async {
+    if (_lockSkipUntil == null && _lockSkipAt == null) return;
+    _lockSkipAt = null;
+    _lockSkipUntil = null;
+    notifyListeners();
+    final SharedPreferences prefs = await SharedPreferences.getInstance();
+    await prefs.remove(_kLockSkipAt);
+    await prefs.remove(_kLockSkipUntil);
+  }
+
+  Future<void> _saveLockPeriods() async {
+    final SharedPreferences prefs = await SharedPreferences.getInstance();
+    await prefs.setStringList(
+      _kLockPeriods,
+      _lockPeriods.map((LockPeriod p) => p.encode()).toList(),
+    );
+    // 先按新时段重算放行截止，再通知界面——否则界面会拿旧值先闪一下锁定态。
+    await _recalcSkipAfterPeriodEdit(prefs);
+    notifyListeners();
+  }
+
+  /// 改完时段后重算「提前解锁」的截止时刻，而不是直接清掉。
+  ///
+  /// 真实使用路径几乎都是「点了提前解锁 → 进设置调规则」，一保存就把放行
+  /// 撤销，人会立刻被锁回去，等于改不了设置（2026-10-22 反馈）。放行是显式
+  /// 动作，不该被编辑动作撤销；但它的范围要跟着新时段收缩/延展：只覆盖
+  /// 按下那一刻已经开始的段，之后才开始的段照常锁。
+  Future<void> _recalcSkipAfterPeriodEdit(SharedPreferences prefs) async {
+    final DateTime? at = _lockSkipAt;
+    final DateTime? until = _lockSkipUntil;
+    if (at == null || until == null) return;
+    final DateTime now = DateTime.now();
+
+    // 已自然到期：顺手清干净，免得界面还说「已放行」。
+    final DateTime? next =
+        now.isBefore(until) ? LockSchedule(_lockPeriods).releasedEnd(now, skipAt: at) : null;
+    if (next == null) {
+      _lockSkipAt = null;
+      _lockSkipUntil = null;
+      await prefs.remove(_kLockSkipAt);
+      await prefs.remove(_kLockSkipUntil);
+      return;
+    }
+    if (next != until) {
+      _lockSkipUntil = next;
+      await prefs.setInt(_kLockSkipUntil, next.millisecondsSinceEpoch);
+    }
   }
 
   /// 若当前主题被禁用，则回落到第一个启用主题。

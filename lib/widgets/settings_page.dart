@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../config.dart';
 import '../settings.dart';
 import '../tools/face_pitch.dart';
+import 'lock_settings_page.dart';
 
 /// 设置页：轮播间隔滑块（5–120 秒）+ 主题参与开关。
 class SettingsPage extends StatefulWidget {
@@ -96,6 +97,31 @@ class _SettingsPageState extends State<SettingsPage> {
               _faceCalibration(text),
               _faceThresholdSlider(text),
               _faceHoldSlider(text),
+              const SizedBox(height: 32),
+              Text('手机锁定', style: text.titleLarge),
+              const SizedBox(height: 6),
+              Text(
+                '手机端到点锁定屏幕。这里与手机端的「锁定设置」是同一份数据，'
+                '任一端改动都会立刻同步。',
+                style: text.bodyMedium,
+              ),
+              const SizedBox(height: 12),
+              Row(
+                children: <Widget>[
+                  OutlinedButton.icon(
+                    onPressed: _openLockSettings,
+                    icon: const Icon(Icons.lock_outline, size: 18),
+                    label: const Text('打开锁定设置'),
+                  ),
+                  const SizedBox(width: 16),
+                  Text(
+                    widget.settings.lockEnabled
+                        ? '自动锁定已开启 · ${widget.settings.lockPeriods.length} 段'
+                        : '自动锁定未开启',
+                    style: text.bodyMedium,
+                  ),
+                ],
+              ),
               ],
             ),
           ),
@@ -150,6 +176,19 @@ class _SettingsPageState extends State<SettingsPage> {
   }
 
   static String _fmtAngle(double? v) => v == null ? '—' : '${v.toStringAsFixed(1)}°';
+
+  /// 打开锁定设置：手机端与平板端共用同一个页面、同一个 Settings 实例。
+  Future<void> _openLockSettings() async {
+    await Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (BuildContext ctx) => LockSettingsPage(
+          settings: widget.settings,
+          onBack: () => Navigator.of(ctx).pop(),
+        ),
+      ),
+    );
+    if (mounted) setState(() {});
+  }
 
   Future<void> _sample({required bool isUp}) async {
     setState(() => _sampling = true);

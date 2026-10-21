@@ -24,6 +24,11 @@ const Duration cardInterval = Duration(seconds: 30);
 /// 平板 / 手机版式分界（dp）。>= 此值走两栏，否则单栏。
 const double wideBreakpoint = 720;
 
+/// 手机 / 平板判定：窗口**最短边**小于此值视为手机。
+/// 用最短边而非当前宽度，避免平板竖屏、手机横屏被误判成另一端。
+/// 600dp 是 Material 的平板下限，故手机端阈值为 600（与版式断点 720 分开）。
+const double phoneMaxShortestSide = 600;
+
 /// 番茄工作法时长（分钟）。
 const int pomodoroMinutes = 25;
 const int shortBreakMinutes = 5;

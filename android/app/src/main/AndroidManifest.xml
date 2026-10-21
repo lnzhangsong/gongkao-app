@@ -9,6 +9,18 @@
     <!-- 秒表抬头计数：前置摄像头检测人脸俯仰角。运行时向用户请求。 -->
     <uses-permission android:name="android.permission.CAMERA"/>
     <uses-feature android:name="android.hardware.camera" android:required="false"/>
+    <!-- 锁定期守护：开机自启 + 前台服务保活 + 后台拉起锁定界面。 -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED"/>
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE"/>
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW"/>
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS"/>
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
+    <!-- 锁定段到点唤醒：精确闹钟。Android 12+ 未授权时自动退化成 setAlarmClock（系统保证送达）。 -->
+    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM"/>
+    <!-- 到点把锁定界面顶到前台：Android 15/16 禁止从广播后台 startActivity，
+         只能走 fullScreenIntent（闹钟类应用的正规通道）。 -->
+    <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT"/>
     <application
         android:label="考公台历"
         android:name="${applicationName}"
@@ -35,6 +47,51 @@
                 <category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>
         </activity>
+        <!-- 现场诊断：受 DUMP 权限保护，只有 adb / shell 能启动，普通应用调不到。
+             用途是把「到点自动锁」整条链路做成纯 adb 可验证的。 -->
+        <activity
+            android:name=".KioskTestActivity"
+            android:exported="true"
+            android:permission="android.permission.DUMP"
+            android:excludeFromRecents="true"
+            android:noHistory="true"
+            android:theme="@android:style/Theme.NoDisplay"/>
+        <!-- 锁定期守护服务：保持锁定界面在前台，被切走会立刻拉回。 -->
+        <service
+            android:name=".LockGuardService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="enforce focus lock during user-configured study hours" />
+        </service>
+        <!-- 开机自启：开机还在锁定期就直接把锁定界面拉起来。 -->
+        <receiver
+            android:name=".BootReceiver"
+            android:enabled="true"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED"/>
+                <action android:name="android.intent.action.QUICKBOOT_POWERON"/>
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED"/>
+            </intent-filter>
+        </receiver>
+        <!-- 锁定段到点：系统闹钟叫醒，应用被杀 / 深度休眠也能拉起。 -->
+        <receiver
+            android:name=".LockAlarmReceiver"
+            android:exported="false"/>
+        <!-- 可选严格模式：设为设备所有者后 lock task 无法被用户解除。 -->
+        <receiver
+            android:name=".KioskAdminReceiver"
+            android:exported="true"
+            android:permission="android.permission.BIND_DEVICE_ADMIN">
+            <meta-data
+                android:name="android.app.device_admin"
+                android:resource="@xml/kiosk_admin"/>
+            <intent-filter>
+                <action android:name="android.app.action.DEVICE_ADMIN_ENABLED"/>
+            </intent-filter>
+        </receiver>
         <!-- Don't delete the meta-data below.
              This is used by the Flutter tool to generate GeneratedPluginRegistrant.java -->
         <meta-data

@@ -32,6 +32,9 @@ ios/Flutter/ephemeral/
 # 系统
 .DS_Store
 
+# 本地工作日志 / AI 会话记录（不入仓）
+.workbuddy/
+
 # 环境与本地配置（AI key 等一律不入仓）
 .env
 .env.*
