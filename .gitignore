@@ -39,3 +39,7 @@ ios/Flutter/ephemeral/
 .env
 .env.*
 !.env.example
+
+# 构建/工具产物
+android/build/
+.openidea/
