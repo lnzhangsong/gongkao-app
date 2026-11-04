@@ -163,6 +163,25 @@ class Kiosk {
     await _invoke<void>('openAccessibility');
   }
 
+  /// Shizuku 状态：`not_installed` / `not_running` / `denied` / `ready`。
+  ///
+  /// 只有 `ready` 才能执行 `pm disable-user`，也就是「到点真正禁用应用」。
+  /// 其余状态下会降级成「点开就弹回桌面」。
+  static Future<String> shizukuStatus() async =>
+      await _invoke<String>('shizukuStatus') ?? 'not_installed';
+
+  /// 向 Shizuku 申请授权；用户点完弹窗后要稍等再查一次状态。
+  static Future<String> requestShizuku() async =>
+      await _invoke<String>('requestShizuku') ?? 'not_installed';
+
+  static Future<void> openShizuku() async {
+    await _invoke<void>('openShizuku');
+  }
+
+  /// 把所有被本应用禁用的应用恢复回来。返回恢复成功的个数，失败返回 -1。
+  static Future<int> restoreDisabledApps() async =>
+      await _invoke<int>('restoreDisabledApps') ?? -1;
+
   static Future<void> openOverlaySettings() async {
     await _invoke<void>('openOverlaySettings');
   }

@@ -46,6 +46,14 @@ class AppWatchService : Service() {
     /** 上一次看到的前台包名，只用于切换时打一行日志。 */
     private var lastFg: String? = null
 
+    /** 上一次做「禁用 / 恢复」同步的时刻，限流用。 */
+    private var lastSyncAt = 0L
+
+    /** 记录自己禁用过哪些包，负责到点恢复。 */
+    private val guardPrefs by lazy {
+        getSharedPreferences("app_limit_guard", Context.MODE_PRIVATE)
+    }
+
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onCreate() {
@@ -78,6 +86,10 @@ class AppWatchService : Service() {
                 return
             }
             val now = System.currentTimeMillis()
+            // 主线：有 shell 身份就直接禁用/恢复应用，到点它连图标都没有，
+            // 根本不存在「点开再踢回去」这回事。
+            syncDisabled(limits, now)
+
             val fg = foregroundPackage()
             if (fg != lastFg) {
                 // 只在切换时记一条，便于排查「配了没反应」到底是没读到前台还是没命中时段。
@@ -114,6 +126,81 @@ class AppWatchService : Service() {
             }
             handler.postDelayed(this, TICK_MS)
         }
+    }
+
+    /**
+     * 按规则禁用 / 恢复应用。
+     *
+     * `pm disable-user` 会把应用从桌面摘掉，点图标系统直接拒绝启动——
+     * 这才是「到点打不开」，而不是「打开之后被踢回去」。
+     *
+     * 只负责自己禁用的那些：记在 [K_MANAGED] 里，规则删掉或时段结束就恢复。
+     * 用户自己去系统设置里手动禁用的应用不在这个集合里，绝不会被误启用。
+     */
+    private fun syncDisabled(limits: AppLimitPrefs, now: Long) {
+        if (now - lastSyncAt < SYNC_MS) return
+        lastSyncAt = now
+        if (ShizukuShell.status(this) != "ready") return
+
+        val kiosk = KioskPrefs(this)
+        val want = limits.rules()
+            .map { it.pkg }
+            .filter { it != packageName }
+            .filter { isThirdParty(it) }
+            .filter { AppLimitSchedule.hit(limits, kiosk, it, now) != null }
+            .toSet()
+
+        val managed = loadManaged()
+        // 以系统真实状态为准：用户可能自己在设置里把我们禁用的应用又启用了。
+        val disabled = ShizukuShell.disabledPackages() ?: return
+
+        var changed = false
+        for (pkg in want) {
+            if (pkg in disabled) {
+                if (managed.add(pkg)) changed = true
+                continue
+            }
+            if (ShizukuShell.setEnabled(pkg, enabled = false)) {
+                managed.add(pkg)
+                changed = true
+                Log.i(TAG, "到点禁用 $pkg")
+            }
+        }
+        for (pkg in managed.toList()) {
+            if (pkg in want) continue
+            if (pkg !in disabled) {
+                // 已经不是我禁用的状态了（被手动启用），只把账销掉。
+                managed.remove(pkg)
+                changed = true
+                continue
+            }
+            if (ShizukuShell.setEnabled(pkg, enabled = true)) {
+                managed.remove(pkg)
+                changed = true
+                Log.i(TAG, "解除禁用 $pkg")
+            }
+        }
+        if (changed) saveManaged(managed)
+    }
+
+    /**
+     * 只处理第三方应用。
+     *
+     * `pm disable-user` 的名字不阻止我们禁用系统应用——真把桌面、输入法、
+     * 电话这类禁掉，手机就废了。系统应用一律不碰，宁可少拦。
+     */
+    private fun isThirdParty(pkg: String): Boolean = try {
+        val info = packageManager.getApplicationInfo(pkg, 0)
+        (info.flags and android.content.pm.ApplicationInfo.FLAG_SYSTEM) == 0
+    } catch (e: Exception) {
+        false
+    }
+
+    private fun loadManaged(): MutableSet<String> =
+        (guardPrefs.getStringSet(K_MANAGED, emptySet()) ?: emptySet()).toMutableSet()
+
+    private fun saveManaged(set: Set<String>) {
+        guardPrefs.edit().putStringSet(K_MANAGED, set).apply()
     }
 
     /**
@@ -272,6 +359,30 @@ class AppWatchService : Service() {
 
         /** 回看的窗口：够覆盖一次前后台切换，又不至于每次扫太久。 */
         private const val LOOKBACK_MS = 8000L
+
+        /** 「禁用 / 恢复」的同步间隔：每次要过一遍 shell，没必要太密。 */
+        private const val SYNC_MS = 3000L
+
+        /** 自己禁用过的包，到点由自己负责恢复。 */
+        private const val K_MANAGED = "managed_packages"
+
+        /**
+         * 恢复所有被本应用禁用的包。
+         *
+         * 用户要一个「万一出问题」的出口：规则配错、Shizuku 被关、
+         * 应用卡在禁用状态时，点一下就能全部启回来。
+         */
+        fun restoreAll(context: Context): Int {
+            if (ShizukuShell.status(context) != "ready") return -1
+            val sp = context.getSharedPreferences("app_limit_guard", Context.MODE_PRIVATE)
+            val managed = (sp.getStringSet(K_MANAGED, emptySet()) ?: emptySet()).toMutableSet()
+            var restored = 0
+            for (pkg in managed.toList()) {
+                if (ShizukuShell.setEnabled(pkg, enabled = true)) restored++
+            }
+            sp.edit().putStringSet(K_MANAGED, emptySet()).apply()
+            return restored
+        }
 
         fun start(context: Context) {
             val intent = Intent(context, AppWatchService::class.java)

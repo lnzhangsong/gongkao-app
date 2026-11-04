@@ -72,6 +72,18 @@ class MainActivity : FlutterActivity() {
                         result.success(null)
                     }
                     "listApps" -> result.success(listLaunchableApps())
+                    "shizukuStatus" -> result.success(ShizukuShell.status(this))
+                    "requestShizuku" -> {
+                        ShizukuShell.requestPermission()
+                        result.success(ShizukuShell.status(this))
+                    }
+                    "openShizuku" -> {
+                        openShizuku()
+                        result.success(null)
+                    }
+                    "restoreDisabledApps" -> {
+                        result.success(AppWatchService.restoreAll(this))
+                    }
                     "accessibilityStatus" -> result.success(isAccessibilityEnabled())
                     "openAccessibility" -> {
                         openAccessibility()
@@ -276,6 +288,24 @@ class MainActivity : FlutterActivity() {
             startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
         } catch (e: Exception) {
             Log.w("MainActivity", "打开无障碍设置失败", e)
+        }
+    }
+
+    /** 打开 Shizuku（没装就跳官网）。 */
+    private fun openShizuku() {
+        val pkg = "moe.shizuku.privileged.api"
+        try {
+            val launch = packageManager.getLaunchIntentForPackage(pkg)
+            if (launch != null) {
+                startActivity(launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+            } else {
+                startActivity(
+                    Intent(Intent.ACTION_VIEW, Uri.parse("https://shizuku.rikka.app/"))
+                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                )
+            }
+        } catch (e: Exception) {
+            Log.w("MainActivity", "打开 Shizuku 失败", e)
         }
     }
 

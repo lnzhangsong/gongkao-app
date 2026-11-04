@@ -38,8 +38,10 @@ class _LockSettingsPageState extends State<LockSettingsPage>
   /// 读取状态的序号，防止并发返回时旧值覆盖新值。
   int _kioskSeq = 0;
 
-  /// 无障碍守护是否开启：开着才能「点开即弹回」，不开就要等轮询。
-  bool _a11yOn = false;
+  /// Shizuku 状态：not_installed / not_running / denied / ready。
+  ///
+  /// 只有 ready 才能 `pm disable-user`，也就是到点把应用真正禁用掉。
+  String _shizuku = 'unknown';
 
   Settings get _settings => widget.settings;
 
@@ -68,11 +70,22 @@ class _LockSettingsPageState extends State<LockSettingsPage>
     }
   }
 
-  /// 刷新无障碍守护的状态。
+  /// 刷新 Shizuku 状态（应用限制能不能到点禁用，全看它）。
   Future<void> _reloadGuard() async {
-    final bool a11y = await Kiosk.accessibilityEnabled();
+    final String shizuku = await Kiosk.shizukuStatus();
     if (!mounted) return;
-    setState(() => _a11yOn = a11y);
+    setState(() => _shizuku = shizuku);
+  }
+
+  /// 把被本应用禁用的应用全部恢复回来（防手滑，也是规则配错时的出口）。
+  Future<void> _restoreAll() async {
+    final int n = await Kiosk.restoreDisabledApps();
+    if (!mounted) return;
+    final String msg = n < 0
+        ? '无法恢复：Shizuku 未就绪'
+        : (n == 0 ? '没有被禁用的应用' : '已恢复 $n 个应用');
+    ScaffoldMessenger.of(context)
+        .showSnackBar(SnackBar(content: Text(msg)));
   }
 
   void _onChanged() {
@@ -437,7 +450,7 @@ class _LockSettingsPageState extends State<LockSettingsPage>
         ),
         const SizedBox(height: 8),
         const Text(
-          '到点打开会被弹回，直到时段结束。',
+          '到点后无法打开，直到时段结束。',
           style: TextStyle(fontSize: 11.5, height: 1.5, color: Colors.white30),
         ),
         const SizedBox(height: 10),
@@ -445,35 +458,49 @@ class _LockSettingsPageState extends State<LockSettingsPage>
         for (final AppLimit l in limits)
           _appLimitRow(l, activeEnd: active[l.package]),
         _addAppButton(),
+        _restoreButton(),
       ],
     );
   }
 
-  /// 拦截生效的前置条件：无障碍守护。
+  /// 应用限制生效的前置条件。
   ///
-  /// 没有它就只能靠 1.2 秒轮询（点开约 1 秒后才弹回），
-  /// 而且「彻底停止」那套替用户点「强行停止」的流程也用不了。
+  /// 有 Shizuku（拿到 shell 身份）就到点直接 `pm disable-user`：图标从桌面
+  /// 消失、点图标系统直接拒启，不存在「打开再踢回去」。没有它时降级成
+  /// 「点开再弹回桌面」，靠无障碍兜住，但做不到图标消失。
   Widget _guardStatusRow() {
-    final bool allGood = _a11yOn;
+    final bool ready = _shizuku == 'ready';
 
-    final String text;
-    final String action;
-    final VoidCallback? onTap;
+    String text;
+    String action = '';
+    VoidCallback? onTap;
 
-    if (!_a11yOn) {
-      text = '无障碍守护未开启：点开应用要等约 1 秒才弹回，也无法彻底停止';
-      action = '去开启';
-      onTap = () => Kiosk.openAccessibility();
+    if (_shizuku == 'ready') {
+      text = '已就绪：到点直接禁用受限应用，图标消失、点不开';
+    } else if (_shizuku == 'not_installed') {
+      text = '未安装 Shizuku：只能做到点了再弹回，图标不会消失';
+      action = '去安装';
+      onTap = () => Kiosk.openShizuku();
+    } else if (_shizuku == 'not_running') {
+      text = 'Shizuku 未运行（重启后要重新启动它）：暂时只能点了再弹回';
+      action = '去启动';
+      onTap = () => Kiosk.openShizuku();
+    } else if (_shizuku == 'denied') {
+      text = 'Shizuku 未授权：授权后才能到点真正禁用应用';
+      action = '去授权';
+      onTap = () async {
+        await Kiosk.requestShizuku();
+        await Future<void>.delayed(const Duration(seconds: 2));
+        await _reloadGuard();
+      };
     } else {
-      text = '已就绪：点开受限应用会立刻弹回桌面';
-      action = '';
-      onTap = null;
+      text = '正在检查 Shizuku 状态…';
     }
 
     final Color tint =
-        allGood ? const Color(0xFF16A34A) : const Color(0xFFF59E0B);
+        ready ? const Color(0xFF16A34A) : const Color(0xFFF59E0B);
     final Color iconColor =
-        allGood ? const Color(0xFF4ADE80) : const Color(0xFFFBBF24);
+        ready ? const Color(0xFF4ADE80) : const Color(0xFFFBBF24);
 
     return Padding(
       padding: const EdgeInsets.only(bottom: 12),
@@ -488,9 +515,7 @@ class _LockSettingsPageState extends State<LockSettingsPage>
             child: Row(
               children: <Widget>[
                 Icon(
-                  allGood
-                      ? Icons.verified_rounded
-                      : Icons.warning_amber_rounded,
+                  ready ? Icons.verified_rounded : Icons.warning_amber_rounded,
                   size: 16,
                   color: iconColor,
                 ),
@@ -517,6 +542,24 @@ class _LockSettingsPageState extends State<LockSettingsPage>
               ],
             ),
           ),
+        ),
+      ),
+    );
+  }
+
+  /// 兜底出口：万一规则配错、把应用卡在禁用状态，一键全恢复。
+  Widget _restoreButton() {
+    return Padding(
+      padding: const EdgeInsets.only(top: 2),
+      child: TextButton.icon(
+        onPressed: _restoreAll,
+        icon: const Icon(Icons.restore_rounded, size: 15),
+        label: const Text('恢复所有被禁用的应用', style: TextStyle(fontSize: 12)),
+        style: TextButton.styleFrom(
+          foregroundColor: Colors.white38,
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+          minimumSize: Size.zero,
+          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
         ),
       ),
     );

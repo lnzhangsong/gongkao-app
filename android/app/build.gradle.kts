@@ -49,6 +49,10 @@ flutter {
 }
 
 dependencies {
-    // 不再依赖 Shizuku：彻底停止改成用无障碍替用户点系统设置里的「强行停止」，
-    // 免去「每次重启要手动激活一次外部应用」的维护成本。
+    // Shizuku：借一次 ADB 配对拿到 shell 身份，用它执行 pm disable-user。
+    // 这是「到点真正禁用应用」唯一可行的路径——普通应用连改别人组件的
+    // enabled 状态都没有权限，只能把自己的组件改来改去。
+    // 锁在 12.2.0：13.x 把 Shizuku.newProcess 收回成 private。
+    implementation("dev.rikka.shizuku:api:12.2.0")
+    implementation("dev.rikka.shizuku:provider:12.2.0")
 }
