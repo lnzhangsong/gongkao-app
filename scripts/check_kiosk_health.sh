@@ -62,6 +62,14 @@ echo "$OPS" | grep -q "^ *SYSTEM_ALERT_WINDOW: allow" \
   && ok "已在 Doze 白名单（深度休眠也唤醒）" \
   || warn "不在 Doze 白名单 → 深度休眠时可能被压掉（adb shell dumpsys deviceidle whitelist +$PKG）"
 
+# 应用限制靠 UsageStats 判断前台是谁。PACKAGE_USAGE_STATS 在清单里声明不等于已授予，
+# 实际是 appops 项，没给的话 queryEvents 恒为空 → 永远拦不到（表现为「规则配了没反应」）。
+USAGE_OP="$("$ADB" shell appops get "$PKG" GET_USAGE_STATS 2>/dev/null | tr -d '\r')"
+case "$USAGE_OP" in
+  *allow*) ok "使用情况访问已授予（应用限制能判断前台是谁）" ;;
+  *) warn "使用情况访问未授予 → 应用限制不会生效（设置 → 应用 → 使用情况访问；或 adb shell appops set $PKG GET_USAGE_STATS allow）" ;;
+esac
+
 echo "── 下一段闹钟 ──"
 ALARM="$("$ADB" shell dumpsys alarm 2>/dev/null | grep -A2 "LockAlarmReceiver" | grep origWhen | head -1 | tr -d '\r')"
 if [ -n "$ALARM" ]; then
