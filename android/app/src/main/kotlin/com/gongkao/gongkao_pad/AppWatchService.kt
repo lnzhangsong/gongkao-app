@@ -24,15 +24,15 @@ import java.util.Locale
  * 应用限用的前台轮询服务。
  *
  * 做法：每 1.2 秒查一次「最近这段时间内最后一个被切到前台的应用」，
- * 一旦是受限应用且此刻处于它的限用时段，就立刻把 [AppBlockActivity] 顶上去。
+ * 一旦是受限应用且此刻处于它的限用时段，就立刻把它顶回桌面。
  *
- * 为什么用轮询而不是无障碍：开机就要能用，不想让用户去系统设置里翻「无障碍」
- * （MIUI 上入口很深、还容易被系统回收）；「使用情况访问」权限本项目本来就有
- * （今日足迹在用）。代价是 1 秒左右的延迟——打开后会闪一下再被顶走。
+ * 这是**兜底**：[AppGuardService]（无障碍）在线时更准更快，由它处理，
+ * 这里只记录不重复动作。无障碍被系统关掉时靠这条兜底，代价是约 1 秒延迟。
+ * 之所以留着轮询：无障碍在 MIUI 上容易被回收，没有兜底就等于功能时灵时不灵。
  *
  * 每个轮询周期都判定一次，而不是只在「前台应用发生变化」时判定：
  * 应用一直开着、到点进入限用时段时包名并没有变化，按变化判定会整段漏掉。
- * 拦截页本身停在前台时（包名等于自己）不判定，所以不会反复自弹。
+ * 自己的界面停在前台时（包名等于自己）不判定，所以不会反复自弹。
  */
 class AppWatchService : Service() {
 
@@ -85,17 +85,23 @@ class AppWatchService : Service() {
                 lastFg = fg
             }
             if (fg != null && fg != packageName) {
-                val end = AppLimitSchedule.limitEnd(
+                val hit = AppLimitSchedule.hit(
                     limits, KioskPrefs(this@AppWatchService), fg, now
                 )
                 // 每个周期都判定，不看「是不是刚切过来」：
                 // 应用一直开着、到点进入限用时段时包名并没有变化，
                 // 按变化判定就会永远漏掉这一种情况（这正是「到点没关」的原因）。
-                if (end != null && (fg != lastBlockPkg || now - lastBlockAt > BLOCK_DEBOUNCE_MS)) {
+                if (hit != null && (fg != lastBlockPkg || now - lastBlockAt > BLOCK_DEBOUNCE_MS)) {
                     lastBlockPkg = fg
                     lastBlockAt = now
-                    Log.i(TAG, "拦截 $fg，解除于 $end")
-                    kickOut(fg, end)
+                    if (AppGuardService.connected) {
+                        // 无障碍在线时由它处理：更快，还能替用户点「强行停止」。
+                        // 两边都动手只会让桌面被推两次、提示重复一遍。
+                        Log.d(TAG, "无障碍在线，轮询跳过 $fg")
+                    } else {
+                        Log.i(TAG, "拦截 $fg，解除于 ${hit.end}（无障碍未开启，走兜底）")
+                        kickOut(fg, hit.end)
+                    }
                 }
             } else {
                 // 回到桌面或本应用时复位，下次再打开同一应用还能立刻拦。
@@ -167,8 +173,8 @@ class AppWatchService : Service() {
         SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(epochMs))
 
     private fun killTarget(pkg: String) {
-        // 有 Shizuku 就 force-stop（连前台服务一起停、不会自启），否则尽力杀后台。
-        if (ShizukuShell.forceStop(pkg)) return
+        // 无障碍没开时只能尽力清后台：有前台服务的应用（VPN/音乐）杀不掉，
+        // 要彻底停得开无障碍、并把该应用标记成「彻底停止」。
         try {
             val am = getSystemService(Context.ACTIVITY_SERVICE) as android.app.ActivityManager
             am.killBackgroundProcesses(pkg)

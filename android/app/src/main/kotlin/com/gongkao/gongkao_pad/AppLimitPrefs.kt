@@ -9,17 +9,19 @@ import android.content.Context
  * 所以不能依赖 Dart 侧的 shared_preferences，单独存一份。
  *
  * 每条规则的持久化格式与 Dart 的 `AppLimit.encode()` 一致：
- * `包名|名称|是否叠加锁机时段|480-720,900-1080`。名称这里用不上，直接跳过。
+ * `包名|名称|是否叠加锁机时段|480-720,900-1080|是否彻底停止`。名称这里用不上，直接跳过。
  */
 class AppLimitPrefs(context: Context) {
     private val sp = context.applicationContext
         .getSharedPreferences("app_limit", Context.MODE_PRIVATE)
 
-    /** 一条规则：包名 + 是否在锁机时段内也拦 + 独立时段。 */
+    /** 一条规则：包名 + 是否在锁机时段内也拦 + 独立时段 + 是否彻底停止。 */
     data class Rule(
         val pkg: String,
         val duringLock: Boolean,
         val periods: List<IntArray>,
+        /** 命中后是否连常驻服务一起停（走无障碍点「强行停止」）。 */
+        val deep: Boolean = false,
     )
 
     /** 原始规则串，每条一行。 */
@@ -48,7 +50,7 @@ class AppLimitPrefs(context: Context) {
         } else {
             emptyList()
         }
-        return Rule(pkg, parts[2] == "1", periods)
+        return Rule(pkg, parts[2] == "1", periods, parts.size > 4 && parts[4] == "1")
     }
 
     private fun parsePeriod(raw: String): IntArray? {

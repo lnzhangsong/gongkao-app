@@ -41,9 +41,6 @@ class _LockSettingsPageState extends State<LockSettingsPage>
   /// 无障碍守护是否开启：开着才能「点开即弹回」，不开就要等轮询。
   bool _a11yOn = false;
 
-  /// Shizuku 状态：not_installed / not_running / denied / ready。
-  String _shizuku = 'unknown';
-
   Settings get _settings => widget.settings;
 
   @override
@@ -71,15 +68,11 @@ class _LockSettingsPageState extends State<LockSettingsPage>
     }
   }
 
-  /// 刷新「无障碍 / Shizuku」两个前置条件。
+  /// 刷新无障碍守护的状态。
   Future<void> _reloadGuard() async {
     final bool a11y = await Kiosk.accessibilityEnabled();
-    final String shizuku = await Kiosk.shizukuStatus();
     if (!mounted) return;
-    setState(() {
-      _a11yOn = a11y;
-      _shizuku = shizuku;
-    });
+    setState(() => _a11yOn = a11y);
   }
 
   void _onChanged() {
@@ -456,42 +449,23 @@ class _LockSettingsPageState extends State<LockSettingsPage>
     );
   }
 
-  /// 拦截生效需要两个前置条件：
-  /// 无障碍（窗口一出现就反应）+ Shizuku（能彻底停掉进程，含 VPN 常驻服务）。
+  /// 拦截生效的前置条件：无障碍守护。
+  ///
+  /// 没有它就只能靠 1.2 秒轮询（点开约 1 秒后才弹回），
+  /// 而且「彻底停止」那套替用户点「强行停止」的流程也用不了。
   Widget _guardStatusRow() {
-    final bool shizukuReady = _shizuku == 'ready';
-    final bool allGood = _a11yOn && shizukuReady;
+    final bool allGood = _a11yOn;
 
     final String text;
     final String action;
     final VoidCallback? onTap;
 
     if (!_a11yOn) {
-      text = '无障碍守护未开启：点开应用要等约 1 秒才弹回';
+      text = '无障碍守护未开启：点开应用要等约 1 秒才弹回，也无法彻底停止';
       action = '去开启';
       onTap = () => Kiosk.openAccessibility();
-    } else if (_shizuku == 'not_installed') {
-      text = '未装 Shizuku：只能拦界面，VPN 这类常驻进程杀不掉';
-      action = '去安装';
-      onTap = () => Kiosk.openShizuku();
-    } else if (_shizuku == 'not_running') {
-      text = 'Shizuku 未运行：启动它之后才能彻底停掉应用';
-      action = '去启动';
-      onTap = () => Kiosk.openShizuku();
-    } else if (_shizuku == 'denied') {
-      text = 'Shizuku 未授权：授权后才能停掉应用的常驻进程';
-      action = '去授权';
-      onTap = () async {
-        await Kiosk.requestShizuku();
-        await Future<void>.delayed(const Duration(seconds: 2));
-        await _reloadGuard();
-      };
-    } else if (shizukuReady) {
-      text = '已就绪：点开受限应用会立刻弹回并彻底停止';
-      action = '';
-      onTap = null;
     } else {
-      text = '正在检查 Shizuku 状态…';
+      text = '已就绪：点开受限应用会立刻弹回桌面';
       action = '';
       onTap = null;
     }

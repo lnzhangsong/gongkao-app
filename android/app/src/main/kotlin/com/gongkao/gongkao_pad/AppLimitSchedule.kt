@@ -24,15 +24,18 @@ object AppLimitSchedule {
         return best
     }
 
+    /** 命中的结果：什么时候解除 + 是否要连常驻服务一起停。 */
+    data class Hit(val end: Long, val deep: Boolean)
+
     /**
-     * 此刻 [pkg] 是否受限；受限返回解除时刻（取最晚的一条），否则 null。
+     * 此刻 [pkg] 是否受限；受限返回解除时刻（取最晚的一条）与拦截强度，否则 null。
      */
-    fun limitEnd(
+    fun hit(
         limits: AppLimitPrefs,
         kiosk: KioskPrefs,
         pkg: String,
         now: Long
-    ): Long? {
+    ): Hit? {
         val rule = limits.rules().firstOrNull { it.pkg == pkg } ?: return null
         var best: Long? = null
         if (rule.duringLock) {
@@ -42,6 +45,7 @@ object AppLimitSchedule {
             val end = periodEnd(period, now) ?: continue
             if (best == null || end > best) best = end
         }
-        return best
+        val end = best ?: return null
+        return Hit(end, rule.deep)
     }
 }

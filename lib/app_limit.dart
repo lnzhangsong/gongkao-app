@@ -14,6 +14,7 @@ class AppLimit {
     required this.label,
     this.periods = const <LockPeriod>[],
     this.duringLock = true,
+    this.deepStop = false,
   });
 
   /// 应用包名，如 `com.tencent.mm`。
@@ -31,6 +32,15 @@ class AppLimit {
   /// 放行了，但在锁机时段内这类应用依然不该用。
   final bool duringLock;
 
+  /// 命中后是否「彻底停止」这个应用（连前台服务一起停）。
+  ///
+  /// 实现方式：无障碍跳到该应用的系统详情页，替用户点一次「强行停止」。
+  /// 普通应用没有 force-stop 权限，只能 killBackgroundProcesses，
+  /// 杀不掉带常驻服务的应用（VPN、音乐、下载）。
+  ///
+  /// 代价是那一下会闪一次设置页，所以默认关闭、按应用单独开。
+  final bool deepStop;
+
   /// 至少有一条规则才算启用。
   bool get enabled => duringLock || periods.isNotEmpty;
 
@@ -41,6 +51,7 @@ class AppLimit {
       parts.add(periods.map((LockPeriod p) => p.label).join('、'));
     }
     if (duringLock) parts.add('锁定时段内也拦');
+    if (deepStop) parts.add('彻底停止');
     if (parts.isEmpty) return '未设置时段';
     return parts.join(' · ');
   }
@@ -49,22 +60,25 @@ class AppLimit {
     String? label,
     List<LockPeriod>? periods,
     bool? duringLock,
+    bool? deepStop,
   }) =>
       AppLimit(
         package: package,
         label: label ?? this.label,
         periods: periods ?? this.periods,
         duringLock: duringLock ?? this.duringLock,
+        deepStop: deepStop ?? this.deepStop,
       );
 
-  /// 持久化格式：`包名|名称|是否叠加|480-720,900-1080`。
+  /// 持久化格式：`包名|名称|是否叠加|480-720,900-1080|是否彻底停止`。
   ///
   /// 名称走 [Uri.encodeComponent]，应用名里带 `|` 也不会把格式拆坏。
+  /// 末尾的「彻底停止」是后加的字段，旧数据只有 4 段，解析时按 false 处理。
   String encode() {
     final String name = Uri.encodeComponent(label);
     final String rules =
         periods.map((LockPeriod p) => p.encode()).join(',');
-    return '$package|$name|${duringLock ? 1 : 0}|$rules';
+    return '$package|$name|${duringLock ? 1 : 0}|$rules|${deepStop ? 1 : 0}';
   }
 
   /// 解析持久化串；格式不对返回 null（旧数据 / 脏数据一律丢弃）。
@@ -86,6 +100,7 @@ class AppLimit {
       label: decoded.isEmpty ? pkg : decoded,
       periods: periods,
       duringLock: parts[2] == '1',
+      deepStop: parts.length > 4 && parts[4] == '1',
     );
   }
 

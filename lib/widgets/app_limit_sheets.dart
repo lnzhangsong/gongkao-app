@@ -395,6 +395,48 @@ class _AppLimitSheetState extends State<_AppLimitSheet> {
                 ],
               ),
             ),
+            const SizedBox(height: 10),
+            Container(
+              padding: const EdgeInsets.fromLTRB(14, 6, 6, 6),
+              decoration: BoxDecoration(
+                color: Colors.white.withValues(alpha: 0.06),
+                borderRadius: BorderRadius.circular(14),
+              ),
+              child: Row(
+                children: <Widget>[
+                  const Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: <Widget>[
+                        Text(
+                          '彻底停止',
+                          style: TextStyle(
+                            fontSize: 13.5,
+                            fontWeight: FontWeight.w600,
+                            color: Colors.white,
+                          ),
+                        ),
+                        SizedBox(height: 2),
+                        Text(
+                          '连 VPN、音乐这类常驻服务一起停；会跳到系统设置页停一次，闪一下约 1 秒。关闭则只弹回桌面',
+                          style:
+                              TextStyle(fontSize: 11.5, color: Colors.white38),
+                        ),
+                      ],
+                    ),
+                  ),
+                  Switch(
+                    value: _limit.deepStop,
+                    onChanged: (bool v) =>
+                        _apply(_limit.copyWith(deepStop: v)),
+                    activeThumbColor: Colors.white,
+                    activeTrackColor: sheetAccent,
+                    inactiveThumbColor: Colors.white70,
+                    inactiveTrackColor: Colors.white24,
+                  ),
+                ],
+              ),
+            ),
             const SizedBox(height: 16),
             Row(
               children: <Widget>[
