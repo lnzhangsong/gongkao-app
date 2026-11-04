@@ -36,12 +36,14 @@ import java.util.Locale
  */
 class AppGuardService : AccessibilityService() {
 
-    /** 上一次执行「回桌面」的时刻，只用来节流动作，不用来决定是否拦截。 */
-    private var lastHomeAt = 0L
-
     /** 上一次弹提示的对象与时刻，避免同一秒里重复 toast。 */
     private var lastToastPkg: String? = null
     private var lastToastAt = 0L
+
+    /** 「彻底停止」的进度存储，重启后仍然有效（按限制段区分）。 */
+    private val deepPrefs by lazy {
+        getSharedPreferences("app_guard", Context.MODE_PRIVATE)
+    }
 
     /** 正在执行「彻底停止」的目标；非 null 时说明流程进行中。 */
     private var stopPkg: String? = null
@@ -101,29 +103,32 @@ class AppGuardService : AccessibilityService() {
 
         // 不按「包名 + 时间窗」跳过判定：那样用户隔一两秒再点一次就会整段放行，
         // 而应用一旦真的站稳前台，就不会再有窗口事件把它踢出来了。
-        // 改成一概判定，只对「动作」做节流——回桌面重复执行无害，卡顿才要避免。
+        // 也不对「回桌面」节流：用户连点时窗口事件可能只隔几十毫秒，
+        // 一旦被节流吞掉就等于这一下没拦。
         markBlocked(now)
         Log.i(TAG, "拦截 $pkg，解除于 ${hit.end}，彻底停止=${hit.deep}")
-        if (hit.deep) {
-            // 直接跳到应用详情页：让设置页盖住受限应用，比「先回桌面再跳」少闪一次。
+        if (hit.deep && !deepDoneFor(pkg, hit.end)) {
+            // 同一个限制段只来这一次。
+            //
+            // 「彻底停止」要借系统应用信息页点按钮，屏幕必然闪一下；每点一次
+            // 都跳一次会很脏。而停过一次之后包已经是 stopped 状态，用户再点
+            // 只是冷启动，立刻弹回桌面就够，没有理由再把他拽到设置页。
+            markDeepStart(pkg, hit.end)
             beginDeepStop(pkg, hit.end)
         } else {
             kickHome(pkg, hit.end)
         }
     }
 
-    /** 退回桌面，附带一次节流的提示。 */
+    /** 退回桌面。不节流：用户点多快都得被踢回来，重复执行 HOME 本身无害。 */
     private fun kickHome(pkg: String, end: Long) {
         val now = System.currentTimeMillis()
-        if (now - lastHomeAt >= HOME_THROTTLE_MS) {
-            lastHomeAt = now
-            performGlobalAction(GLOBAL_ACTION_HOME)
-            // 顶回桌面后补一刀：普通应用没有 force-stop 权限，
-            // killBackgroundProcesses 只能清掉「已不在前台」的进程，
-            // 但足以让它停止发声/停止后台工作，重新打开就是冷启动。
-            // 延后一点，等它真的退到后台再杀，否则会被系统判定为前台而无效。
-            handler.postDelayed({ killBackground(pkg) }, KILL_DELAY_MS)
-        }
+        performGlobalAction(GLOBAL_ACTION_HOME)
+        // 顶回桌面后补一刀：普通应用没有 force-stop 权限，
+        // killBackgroundProcesses 只能清掉「已不在前台」的进程，
+        // 但足以让它停止发声/停止后台工作，重新打开就是冷启动。
+        // 延后一点，等它真的退到后台再杀，否则会被系统判定为前台而无效。
+        handler.postDelayed({ killBackground(pkg) }, KILL_DELAY_MS)
         if (pkg != lastToastPkg || now - lastToastAt >= TOAST_THROTTLE_MS) {
             lastToastPkg = pkg
             lastToastAt = now
@@ -132,6 +137,37 @@ class AppGuardService : AccessibilityService() {
     }
 
     // ── 第二部分：替用户点「强行停止」 ──────────────────────────────
+
+    /**
+     * 本限制段是否已经处理过「彻底停止」。
+     *
+     * 用「包名 + 解除时刻」标识这一段：同一段的 end 是固定的，
+     * 下一段（或明天同一段）会算出不同的 end，自然重新允许停一次。
+     * 成功过、或者已经试满次数，都算处理过。
+     */
+    private fun deepDoneFor(pkg: String, end: Long): Boolean {
+        if (deepPrefs.getString(K_DEEP_PKG, null) != pkg) return false
+        if (deepPrefs.getLong(K_DEEP_END, 0L) != end) return false
+        if (deepPrefs.getBoolean(K_DEEP_OK, false)) return true
+        return deepPrefs.getInt(K_DEEP_ATTEMPTS, 0) >= MAX_DEEP_ATTEMPTS
+    }
+
+    /** 记一次尝试，顺带复位上一段的状态。 */
+    private fun markDeepStart(pkg: String, end: Long) {
+        val same = deepPrefs.getString(K_DEEP_PKG, null) == pkg &&
+            deepPrefs.getLong(K_DEEP_END, 0L) == end
+        val attempts = if (same) deepPrefs.getInt(K_DEEP_ATTEMPTS, 0) + 1 else 1
+        deepPrefs.edit()
+            .putString(K_DEEP_PKG, pkg)
+            .putLong(K_DEEP_END, end)
+            .putBoolean(K_DEEP_OK, false)
+            .putInt(K_DEEP_ATTEMPTS, attempts)
+            .apply()
+    }
+
+    private fun markDeepOk() {
+        deepPrefs.edit().putBoolean(K_DEEP_OK, true).apply()
+    }
 
     private fun beginDeepStop(pkg: String, end: Long) {
         stopPkg = pkg
@@ -206,6 +242,7 @@ class AppGuardService : AccessibilityService() {
         handler.removeCallbacks(retryClick)
         if (success) {
             Log.i(TAG, "已彻底停止 $pkg")
+            markDeepOk()
         } else {
             Log.w(TAG, "彻底停止失败，回退到清后台：$pkg")
             killBackground(pkg)
@@ -271,14 +308,19 @@ class AppGuardService : AccessibilityService() {
     companion object {
         private const val TAG = "AppGuard"
 
-        /** 「回桌面」的动作间隔：连续窗口事件只执行一次，避免闪烁和卡顿。 */
-        private const val HOME_THROTTLE_MS = 300L
-
         /** 同一条提示的最小间隔。 */
         private const val TOAST_THROTTLE_MS = 2000L
 
         /** 退回桌面后等多久再清后台：要等它真的不在前台，杀了才有效。 */
         private const val KILL_DELAY_MS = 600L
+
+        /** 同一限制段里最多尝试几次「彻底停止」：失败就退化成只弹回桌面。 */
+        private const val MAX_DEEP_ATTEMPTS = 2
+
+        private const val K_DEEP_PKG = "deep_pkg"
+        private const val K_DEEP_END = "deep_end"
+        private const val K_DEEP_OK = "deep_ok"
+        private const val K_DEEP_ATTEMPTS = "deep_attempts"
 
         /** 整个「点强行停止」流程的上限，超过就回退。 */
         private const val STOP_TIMEOUT_MS = 8000L
