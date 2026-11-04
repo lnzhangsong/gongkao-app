@@ -36,6 +36,31 @@ object KioskSchedule {
     }
 
     /**
+     * 此刻整机锁定时段的结束时刻，**不考虑「提前解锁」**。
+     *
+     * 应用限用的「锁机时段内也拦」要用这一条：提前解锁只放行整机，
+     * 不该让被限制的应用跟着放行。
+     */
+    fun lockedEndIgnoringSkip(prefs: KioskPrefs, now: Long): Long? {
+        if (!prefs.enabled) return null
+        val periods = prefs.periods
+        if (periods.isEmpty()) return null
+
+        var best: Long? = null
+        val cal = java.util.Calendar.getInstance()
+        for (period in periods) {
+            for (offset in -1..1) {
+                val dayStart = dayStart(cal, now, offset)
+                val start = dayStart + period[0] * 60_000L
+                val end = start + durationMinutes(period[0], period[1]) * 60_000L
+                if (now < start || now >= end) continue
+                if (best == null || end > best) best = end
+            }
+        }
+        return best
+    }
+
+    /**
      * 下一次开始锁定的时刻（epoch ms），没有则 null。[KioskAlarms] 用它排闹钟。
      *
      * 不按放行窗口做过滤：放行只作用于某一段实例，与它重叠的另一段该在
@@ -58,7 +83,7 @@ object KioskSchedule {
         return best
     }
 
-    private fun dayStart(cal: java.util.Calendar, now: Long, offset: Int): Long {
+    internal fun dayStart(cal: java.util.Calendar, now: Long, offset: Int): Long {
         cal.timeInMillis = now
         cal.set(java.util.Calendar.HOUR_OF_DAY, 0)
         cal.set(java.util.Calendar.MINUTE, 0)

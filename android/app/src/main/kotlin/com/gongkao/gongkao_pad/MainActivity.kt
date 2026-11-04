@@ -14,6 +14,8 @@ import android.os.Build
 import android.os.PowerManager
 import android.os.Process
 import android.provider.Settings
+import android.util.Log
+import android.view.WindowManager
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
@@ -59,9 +61,17 @@ class MainActivity : FlutterActivity() {
                             call.argument<Boolean>("autoStart") ?: true,
                             call.argument<List<String>>("periods") ?: emptyList(),
                             call.argument<Long>("skipAt") ?: 0L,
-                            call.argument<Long>("skipUntil") ?: 0L)
+                            call.argument<Long>("skipUntil") ?: 0L,
+                            call.argument<List<String>>("appLimits") ?: emptyList())
                         result.success(kioskStatus())
                     }
+                    "syncAppLimits" -> {
+                        syncAppLimits(
+                            call.argument<List<String>>("rules") ?: emptyList()
+                        )
+                        result.success(null)
+                    }
+                    "listApps" -> result.success(listLaunchableApps())
                     "openOverlaySettings" -> {
                         openOverlaySettings()
                         result.success(null)
@@ -117,12 +127,41 @@ class MainActivity : FlutterActivity() {
                 }
             }
             startLockTask()
-            KioskSchedule.lockedEnd(KioskPrefs(this), System.currentTimeMillis())
-                ?.let { LockGuardService.start(this) }
-            true
+            // startLockTask 在「非设备所有者 + 屏幕固定未开启」时是**静默无效**的：
+            // 不抛异常、也不进锁定态。以前这里直接 return true，上层以为锁上了，
+            // 实际状态栏照常能拉、Home 照常能按——表现就是「起来了但没有全屏遮盖」。
+            // 必须回读真实状态把结果如实上报。
+            val ok = awaitLockTask(400)
+            Log.i(
+                "Kiosk",
+                "enterKiosk pinning=${isPinningEnabled()} owner=${isDeviceOwner()} " +
+                    "sdk=${Build.VERSION.SDK_INT} -> lockTask=$ok"
+            )
+            if (ok) {
+                KioskSchedule.lockedEnd(KioskPrefs(this), System.currentTimeMillis())
+                    ?.let { LockGuardService.start(this) }
+            }
+            // 能否盖住锁屏与 lock task 无关：只要处于锁定期就一律放行（即使固定失败）。
+            syncLockScreenWindow()
+            ok
         } catch (e: Exception) {
+            Log.w("Kiosk", "enterKiosk failed", e)
             false
         }
+    }
+
+    /** 轮询等待锁定态生效：系统应用是异步的，直接回读常常还是 NONE。 */
+    private fun awaitLockTask(timeoutMs: Long): Boolean {
+        val deadline = System.currentTimeMillis() + timeoutMs
+        while (System.currentTimeMillis() < deadline) {
+            if (isLockTaskActive()) return true
+            try {
+                Thread.sleep(40)
+            } catch (e: InterruptedException) {
+                break
+            }
+        }
+        return isLockTaskActive()
     }
 
     private fun exitKiosk() {
@@ -131,6 +170,7 @@ class MainActivity : FlutterActivity() {
         } catch (e: Exception) {
             // 忽略：已被系统解除固定时 stopLockTask 会抛异常。
         }
+        applyLockScreenWindow(false)
         LockGuardService.stop(this)
     }
 
@@ -140,7 +180,8 @@ class MainActivity : FlutterActivity() {
         autoStart: Boolean,
         periods: List<String>,
         skipAt: Long,
-        skipUntil: Long
+        skipUntil: Long,
+        appLimits: List<String>
     ) {
         val prefs = KioskPrefs(this)
         prefs.enabled = enabled
@@ -156,8 +197,21 @@ class MainActivity : FlutterActivity() {
         }
         // 非锁定期不要把守护服务留在后台。
         if (!enabled) LockGuardService.stop(this)
+        // 应用限用规则一并落地，并确保轮询服务跟着起停。
+        syncAppLimits(appLimits)
         // 配置一变就重排「下一段开始」的闹钟（含放行 skipUntil 的变化）。
         KioskAlarms.schedule(this)
+    }
+
+    /**
+     * 落盘应用限用规则，并按「有没有规则」起停前台轮询服务。
+     *
+     * 没有规则就不留常驻服务和通知——这条容易被忘，用户清空规则后
+     * 通知栏还挂着一条「应用限制生效中」会很怪。
+     */
+    private fun syncAppLimits(rules: List<String>) {
+        AppLimitPrefs(this).raw = rules
+        AppWatchService.sync(this)
     }
 
     private fun kioskStatus(): Map<String, Any> = mapOf(
@@ -251,8 +305,49 @@ class MainActivity : FlutterActivity() {
     override fun onResume() {
         super.onResume()
         AppForeground.alive = true
+        // 到点被拉起时设备可能正锁屏 / 熄屏：必须让界面盖在锁屏之上并点亮屏幕，
+        // 否则界面在锁屏**下面**，用户什么都看不到（「能自启动，但屏幕没启动」）。
+        syncLockScreenWindow()
         // 界面已经到前台了，撤掉「锁定开始」那条全屏通知，避免常驻。
         KioskNotifier.cancel(this)
+    }
+
+    /**
+     * 锁定期：允许界面盖在锁屏之上，并在被拉起时点亮屏幕。
+     *
+     * 非锁定期必须关掉——否则平时打开应用也会盖住锁屏、还会自己亮屏。
+     */
+    private fun applyLockScreenWindow(locked: Boolean) {
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
+                setShowWhenLocked(locked)
+                setTurnScreenOn(locked)
+            } else {
+                @Suppress("DEPRECATION")
+                if (locked) {
+                    window.addFlags(
+                        WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED or
+                            WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON
+                    )
+                } else {
+                    window.clearFlags(
+                        WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED or
+                            WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON
+                    )
+                }
+            }
+            Log.i("Kiosk", "lockScreenWindow locked=$locked")
+        } catch (e: Exception) {
+            Log.w("Kiosk", "applyLockScreenWindow failed", e)
+        }
+    }
+
+    /** 按「此刻是否处于锁定期」刷新窗口属性。 */
+    private fun syncLockScreenWindow() {
+        val prefs = KioskPrefs(this)
+        val locked = prefs.enabled &&
+            KioskSchedule.lockedEnd(prefs, System.currentTimeMillis()) != null
+        applyLockScreenWindow(locked)
     }
 
     override fun onPause() {
@@ -414,5 +509,33 @@ class MainActivity : FlutterActivity() {
         } catch (ex: PackageManager.NameNotFoundException) {
             pkg
         }
+    }
+
+    /**
+     * 可被限制的应用清单：桌面可见的、且不是本应用。
+     *
+     * 只取 CATEGORY_LAUNCHER：系统组件、纯后台服务没必要出现在选择列表里。
+     */
+    private fun listLaunchableApps(): List<Map<String, Any>> {
+        val pm = packageManager
+        val intent = Intent(Intent.ACTION_MAIN)
+            .addCategory(Intent.CATEGORY_LAUNCHER)
+        val infos = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            pm.queryIntentActivities(intent, PackageManager.ResolveInfoFlags.of(0L))
+        } else {
+            @Suppress("DEPRECATION")
+            pm.queryIntentActivities(intent, 0)
+        }
+        return infos.asSequence()
+            .mapNotNull { it.activityInfo?.applicationInfo }
+            .filter { it.packageName != packageName }
+            .distinctBy { it.packageName }
+            .map { info ->
+                mapOf(
+                    "package" to info.packageName,
+                    "label" to pm.getApplicationLabel(info).toString()
+                )
+            }
+            .toList()
     }
 }

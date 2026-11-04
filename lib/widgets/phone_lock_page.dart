@@ -4,10 +4,12 @@ import 'package:flutter/material.dart';
 import 'package:fluttertoast/fluttertoast.dart';
 import 'package:lunar/lunar.dart';
 
+import '../app_limit.dart';
 import '../config.dart';
 import '../kiosk.dart';
 import '../lock_schedule.dart';
 import '../settings.dart';
+import 'kiosk_guide.dart';
 import 'lock_settings_page.dart';
 import 'lock_sheets.dart' show sheetAccent;
 import 'wallpaper_background.dart';
@@ -36,6 +38,13 @@ class _PhoneLockPageState extends State<PhoneLockPage>
 
   /// 系统级锁定状态（屏幕固定 / 悬浮窗 / 设备所有者）。
   KioskStatus _kiosk = const KioskStatus();
+
+  /// 最近一次尝试进入系统锁定失败了。
+  ///
+  /// 非设备所有者 + 「屏幕固定」未开启时 `startLockTask()` 是静默无效的：
+  /// 应用照样被拉到前台，但通知栏、返回桌面都还能用——看起来就是
+  /// 「能自启动，但没有全屏遮盖」。这里如实记下来，界面据此给出提示。
+  bool _lockTaskFailed = false;
 
   /// 正在调用原生进入锁定，避免每秒重复触发。
   bool _pinBusy = false;
@@ -104,6 +113,8 @@ class _PhoneLockPageState extends State<PhoneLockPage>
           _settings.lockPeriods.map((LockPeriod p) => p.encode()).toList(),
       skipAt: _settings.lockSkipAt,
       skipUntil: _settings.lockSkipUntil,
+      appLimits:
+          _settings.appLimits.map((AppLimit l) => l.encode()).toList(),
     );
   }
 
@@ -143,11 +154,68 @@ class _PhoneLockPageState extends State<PhoneLockPage>
     _pinBusy = true;
     _lastPinTry = now;
     try {
-      if (!_kiosk.active) await Kiosk.start();
+      if (!_kiosk.active) {
+        final bool ok = await Kiosk.start();
+        // 原生侧现在会回读真实锁定态：屏幕固定没开时 startLockTask 是静默无效的，
+        // 这里拿到 false 就说明「只是把界面拉到前台」，界面要如实告知。
+        if (mounted && ok == _lockTaskFailed) {
+          setState(() => _lockTaskFailed = !ok);
+        }
+      }
       await _reloadKiosk();
     } finally {
       _pinBusy = false;
     }
+  }
+
+  /// 系统级锁定没生效：到点只会把应用拉到前台，通知栏 / 返回桌面仍能退出。
+  bool get _showKioskWarning =>
+      _lockTaskFailed && !_kiosk.deviceOwner && !_kiosk.pinningEnabled;
+
+  /// 提示并引导去开启「屏幕固定」。不显示具体失败原因时用户根本无从下手。
+  Widget _kioskWarning() {
+    return GestureDetector(
+      onTap: () => showKioskGuideSheet(context, status: _kiosk),
+      child: Container(
+        padding: const EdgeInsets.fromLTRB(16, 13, 12, 13),
+        decoration: BoxDecoration(
+          color: const Color(0xFFEF4444).withValues(alpha: 0.14),
+          borderRadius: BorderRadius.circular(16),
+          border:
+              Border.all(color: const Color(0xFFEF4444).withValues(alpha: 0.26)),
+        ),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: <Widget>[
+            const Icon(Icons.gpp_maybe_outlined,
+                size: 18, color: Color(0xFFFCA5A5)),
+            const SizedBox(width: 10),
+            const Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: <Widget>[
+                  Text(
+                    '系统锁定未生效',
+                    style: TextStyle(
+                      fontSize: 13,
+                      fontWeight: FontWeight.w600,
+                      color: Colors.white,
+                    ),
+                  ),
+                  SizedBox(height: 4),
+                  Text(
+                    '到点只会把界面拉到前台，通知栏和返回桌面仍能退出。点这里查看如何开启「屏幕固定」。',
+                    style: TextStyle(
+                        fontSize: 12, height: 1.6, color: Colors.white70),
+                  ),
+                ],
+              ),
+            ),
+            const Icon(Icons.chevron_right, size: 18, color: Colors.white30),
+          ],
+        ),
+      ),
+    );
   }
 
   Future<void> _openSettings() async {
@@ -198,6 +266,10 @@ class _PhoneLockPageState extends State<PhoneLockPage>
               _clockBlock(),
               const SizedBox(height: 30),
               _statusCard(next),
+              if (_showKioskWarning) ...<Widget>[
+                const SizedBox(height: 14),
+                _kioskWarning(),
+              ],
               const SizedBox(height: 14),
               _settingsEntry(periods),
               const SizedBox(height: 24),

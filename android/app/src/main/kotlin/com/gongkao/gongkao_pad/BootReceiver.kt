@@ -23,6 +23,14 @@ class BootReceiver : BroadcastReceiver() {
             action == "com.htc.intent.action.QUICKBOOT_POWERON"
         if (!boot && action != Intent.ACTION_MY_PACKAGE_REPLACED) return
 
+        // 应用限制与整机锁定互相独立：只要有规则，重启后就得把轮询服务拉起来，
+        // 否则「重启一次这个功能就失效」。放在 enabled/autoStart 判断之前。
+        try {
+            AppWatchService.sync(context)
+        } catch (e: Exception) {
+            // 后台启动前台服务受限时忽略：用户下次打开 App 会再同步一次。
+        }
+
         val prefs = KioskPrefs(context)
         if (!prefs.enabled && !prefs.autoStart) return
 

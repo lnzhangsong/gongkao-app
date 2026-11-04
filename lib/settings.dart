@@ -1,7 +1,9 @@
 import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'app_limit.dart';
 import 'config.dart';
+import 'kiosk.dart';
 import 'lock_schedule.dart';
 
 /// 应用设置（持久化到 shared_preferences）。
@@ -20,6 +22,7 @@ class Settings extends ChangeNotifier {
   static const String _kLockSkipUntil = 'lock_skip_until';
   static const String _kLockSkipAt = 'lock_skip_at';
   static const String _kLockAutoStart = 'lock_auto_start';
+  static const String _kAppLimits = 'app_limits';
 
   int _intervalSeconds = cardInterval.inSeconds;
   int get intervalSeconds => _intervalSeconds;
@@ -70,6 +73,12 @@ class Settings extends ChangeNotifier {
   /// 开机自启：开机后自动拉起应用（锁定期内则无条件拉起并锁定）。
   bool _lockAutoStart = true;
   bool get lockAutoStart => _lockAutoStart;
+
+  /// 应用限用规则（独立时段 + 锁机时段叠加）。
+  ///
+  /// 与整机锁定分开存：整机锁定管整块屏幕，这里只管某几个应用能不能打开。
+  List<AppLimit> _appLimits = <AppLimit>[];
+  List<AppLimit> get appLimits => List<AppLimit>.unmodifiable(_appLimits);
 
   /// 参与轮播的主题集合。空集合视为全部参与（兜底）。
   final Set<String> _enabledKinds = <String>{...allKinds};
@@ -128,6 +137,12 @@ class Settings extends ChangeNotifier {
       }
     }
     _lockAutoStart = prefs.getBool(_kLockAutoStart) ?? true;
+    final List<String>? rawLimits = prefs.getStringList(_kAppLimits);
+    if (rawLimits != null) {
+      _appLimits = <AppLimit>[
+        for (final String raw in rawLimits) ?AppLimit.parse(raw),
+      ];
+    }
     _normalizeCurrentKind();
     notifyListeners();
   }
@@ -291,6 +306,48 @@ class Settings extends ChangeNotifier {
     notifyListeners();
     final SharedPreferences prefs = await SharedPreferences.getInstance();
     await prefs.setBool(_kLockAutoStart, on);
+  }
+
+  // ── 应用限制 ────────────────────────────────────────────────────────
+
+  /// 新增一条应用限用规则；同包名的旧规则直接替换。
+  Future<void> addAppLimit(AppLimit limit) async {
+    final List<AppLimit> next = List<AppLimit>.of(_appLimits)
+      ..removeWhere((AppLimit l) => l.package == limit.package)
+      ..add(limit);
+    _appLimits = next;
+    await _saveAppLimits();
+  }
+
+  /// 覆盖已有的规则（包名不可改）。
+  Future<void> updateAppLimit(AppLimit limit) async {
+    final int i =
+        _appLimits.indexWhere((AppLimit l) => l.package == limit.package);
+    if (i < 0) return;
+    final List<AppLimit> next = List<AppLimit>.of(_appLimits);
+    next[i] = limit;
+    _appLimits = next;
+    await _saveAppLimits();
+  }
+
+  /// 移除一条规则。
+  Future<void> removeAppLimit(String package) async {
+    final int i = _appLimits.indexWhere((AppLimit l) => l.package == package);
+    if (i < 0) return;
+    final List<AppLimit> next = List<AppLimit>.of(_appLimits)..removeAt(i);
+    _appLimits = next;
+    await _saveAppLimits();
+  }
+
+  Future<void> _saveAppLimits() async {
+    final List<String> raw =
+        _appLimits.map((AppLimit l) => l.encode()).toList();
+    final SharedPreferences prefs = await SharedPreferences.getInstance();
+    await prefs.setStringList(_kAppLimits, raw);
+    // 拦截发生在原生侧（前台轮询 + 拦截页），改完必须立刻推过去，
+    // 否则要等下一次整机配置同步才生效。
+    await Kiosk.syncAppLimits(raw);
+    notifyListeners();
   }
 
   /// 记录「本次提前解锁」：从 [at] 这一刻起，放过当时已经在跑的段，直到 [until]。

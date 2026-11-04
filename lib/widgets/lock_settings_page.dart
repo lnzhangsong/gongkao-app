@@ -1,8 +1,10 @@
 import 'package:flutter/material.dart';
 
+import '../app_limit.dart';
 import '../kiosk.dart';
 import '../lock_schedule.dart';
 import '../settings.dart';
+import 'app_limit_sheets.dart';
 import 'kiosk_guide.dart';
 import 'lock_sheets.dart';
 import 'wallpaper_background.dart';
@@ -112,6 +114,8 @@ class _LockSettingsPageState extends State<LockSettingsPage>
                 if (periods.isEmpty) _emptyState(),
                 const SizedBox(height: 6),
                 _addButton(),
+                const SizedBox(height: 26),
+                _appLimitSection(),
                 const SizedBox(height: 26),
                 _strengthSection(),
                 const SizedBox(height: 22),
@@ -394,6 +398,151 @@ class _LockSettingsPageState extends State<LockSettingsPage>
         ),
       ),
     );
+  }
+
+  // ── 应用限制 ──────────────────────────────────────────────────────
+
+  /// 应用限制区块：单独管「某几个应用在某个时段能不能打开」。
+  Widget _appLimitSection() {
+    final List<AppLimit> limits = _settings.appLimits;
+    final DateTime now = DateTime.now();
+    // 「锁定时段内也拦」用的是整机时段本身，不传 skip：
+    // 提前解锁只放行整机屏幕，不该让被限制的应用跟着放行。
+    final DateTime? lockEnd = _settings.lockEnabled
+        ? LockSchedule(_settings.lockPeriods).activeEnd(now)
+        : null;
+    final Map<String, DateTime> active =
+        activeLimits(limits, now, lockEnd: lockEnd);
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: <Widget>[
+        _sectionTitle(
+          '应用限制',
+          limits.isEmpty ? '未设置' : '${limits.length} 个应用',
+        ),
+        const SizedBox(height: 8),
+        const Text(
+          '到点打开会被弹回，直到时段结束。',
+          style: TextStyle(fontSize: 11.5, height: 1.5, color: Colors.white30),
+        ),
+        const SizedBox(height: 10),
+        for (final AppLimit l in limits)
+          _appLimitRow(l, activeEnd: active[l.package]),
+        _addAppButton(),
+      ],
+    );
+  }
+
+  Widget _appLimitRow(AppLimit limit, {DateTime? activeEnd}) {
+    final bool on = activeEnd != null;
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 10),
+      child: Material(
+        color: on
+            ? sheetAccent.withValues(alpha: 0.16)
+            : Colors.white.withValues(alpha: 0.08),
+        borderRadius: BorderRadius.circular(14),
+        clipBehavior: Clip.antiAlias,
+        child: InkWell(
+          onTap: () => showAppLimitSheet(
+            context,
+            settings: _settings,
+            limit: limit,
+          ),
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(16, 13, 10, 13),
+            child: Row(
+              children: <Widget>[
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: <Widget>[
+                      Row(
+                        children: <Widget>[
+                          Flexible(
+                            child: Text(
+                              limit.label,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(
+                                fontSize: 14.5,
+                                fontWeight: FontWeight.w600,
+                                color: Colors.white,
+                              ),
+                            ),
+                          ),
+                          if (on) ...<Widget>[
+                            const SizedBox(width: 8),
+                            Container(
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: 7, vertical: 2),
+                              decoration: BoxDecoration(
+                                color: sheetAccent.withValues(alpha: 0.30),
+                                borderRadius: BorderRadius.circular(6),
+                              ),
+                              child: const Text(
+                                '限制中',
+                                style: TextStyle(
+                                    fontSize: 10, color: Colors.white),
+                              ),
+                            ),
+                          ],
+                        ],
+                      ),
+                      const SizedBox(height: 3),
+                      Text(
+                        limit.summary,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                            fontSize: 11, color: Colors.white38),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(width: 6),
+                const Icon(Icons.chevron_right,
+                    size: 18, color: Colors.white24),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _addAppButton() {
+    return SizedBox(
+      width: double.infinity,
+      height: 46,
+      child: TextButton.icon(
+        onPressed: _addApp,
+        icon: const Icon(Icons.add, size: 18),
+        label: const Text('添加应用', style: TextStyle(fontSize: 14)),
+        style: TextButton.styleFrom(
+          foregroundColor: Colors.white60,
+          backgroundColor: Colors.white.withValues(alpha: 0.04),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(14),
+            side: BorderSide(color: Colors.white.withValues(alpha: 0.10)),
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// 选一个应用加进列表，并直接打开规则编辑。
+  Future<void> _addApp() async {
+    final InstalledApp? app = await showAppPickerSheet(
+      context,
+      exclude: _settings.appLimits.map((AppLimit l) => l.package).toSet(),
+    );
+    if (app == null || !mounted) return;
+    final AppLimit limit = AppLimit(package: app.package, label: app.label);
+    await _settings.addAppLimit(limit);
+    if (!mounted) return;
+    await showAppLimitSheet(context, settings: _settings, limit: limit);
   }
 
   /// 锁定强度：屏幕固定 / 后台守护 / 开机自启。

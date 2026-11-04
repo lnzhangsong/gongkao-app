@@ -65,6 +65,23 @@
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
                 android:value="enforce focus lock during user-configured study hours" />
         </service>
+        <!-- 应用限制：前台轮询检测受限应用，命中即拉起拦截页。 -->
+        <service
+            android:name=".AppWatchService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="detect restricted apps entering foreground and block them" />
+        </service>
+        <!-- 拦截页：把受限应用顶到后台，只留「什么时候能再用」。 -->
+        <activity
+            android:name=".AppBlockActivity"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            android:launchMode="singleTask"
+            android:taskAffinity=""
+            android:theme="@android:style/Theme.Material.NoActionBar"/>
         <!-- 开机自启：开机还在锁定期就直接把锁定界面拉起来。 -->
         <receiver
             android:name=".BootReceiver"

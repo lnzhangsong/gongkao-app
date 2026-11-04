@@ -53,6 +53,22 @@ class KioskStatus {
   }
 }
 
+/// 一个可被限制的已安装应用（来自原生 PackageManager）。
+class InstalledApp {
+  const InstalledApp({required this.package, required this.label});
+
+  final String package;
+  final String label;
+
+  factory InstalledApp.fromMap(Object? raw) {
+    final Map<Object?, Object?> m = raw as Map<Object?, Object?>;
+    return InstalledApp(
+      package: (m['package'] as String?) ?? '',
+      label: (m['label'] as String?) ?? '',
+    );
+  }
+}
+
 /// 与原生 Kiosk 通道的封装。
 ///
 /// 锁定期内调用 [start] 进入 Android lock task（屏幕固定）：
@@ -95,12 +111,16 @@ class Kiosk {
   ///
   /// [skipAt] 是按下「提前解锁」的时刻，[skipUntil] 是放行到哪一刻：
   /// 原生只放过按下时已经开始的段，之后开始的新段照常锁。
+  ///
+  /// [appLimits] 是应用限用规则的持久化串（见 `AppLimit.encode`）：
+  /// 每个串是 `包名|名称|是否叠加|时段列表`，原生只需包名和时段。
   static Future<void> sync({
     required bool enabled,
     required bool autoStart,
     required List<String> periods,
     required DateTime? skipAt,
     required DateTime? skipUntil,
+    List<String> appLimits = const <String>[],
   }) async {
     await _invoke<void>('sync', <String, Object?>{
       'enabled': enabled,
@@ -108,7 +128,31 @@ class Kiosk {
       'periods': periods,
       'skipAt': skipAt?.millisecondsSinceEpoch ?? 0,
       'skipUntil': skipUntil?.millisecondsSinceEpoch ?? 0,
+      'appLimits': appLimits,
     });
+  }
+
+  /// 只同步应用限用规则。
+  ///
+  /// 拦截在原生侧做（前台轮询 + 拦截页），规则一变就要立刻生效，
+  /// 不必等整机配置整体同步一次。
+  static Future<void> syncAppLimits(List<String> rules) async {
+    await _invoke<void>('syncAppLimits', <String, Object?>{'rules': rules});
+  }
+
+  /// 可用于限制的已安装应用（有启动图标、非系统框架类），按名称排序。
+  static Future<List<InstalledApp>> listApps() async {
+    final List<Object?>? raw = await _invoke<List<Object?>>('listApps');
+    if (raw == null) return const <InstalledApp>[];
+    final List<InstalledApp> out = <InstalledApp>[];
+    for (final Object? item in raw) {
+      if (item is Map) {
+        final InstalledApp app = InstalledApp.fromMap(item);
+        if (app.package.isNotEmpty) out.add(app);
+      }
+    }
+    out.sort((InstalledApp a, InstalledApp b) => a.label.compareTo(b.label));
+    return out;
   }
 
   static Future<void> openOverlaySettings() async {
