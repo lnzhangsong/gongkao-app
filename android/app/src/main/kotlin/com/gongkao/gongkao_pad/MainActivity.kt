@@ -72,6 +72,20 @@ class MainActivity : FlutterActivity() {
                         result.success(null)
                     }
                     "listApps" -> result.success(listLaunchableApps())
+                    "shizukuStatus" -> result.success(ShizukuShell.status(this))
+                    "requestShizuku" -> {
+                        ShizukuShell.requestPermission()
+                        result.success(ShizukuShell.status(this))
+                    }
+                    "openShizuku" -> {
+                        openShizuku()
+                        result.success(null)
+                    }
+                    "accessibilityStatus" -> result.success(isAccessibilityEnabled())
+                    "openAccessibility" -> {
+                        openAccessibility()
+                        result.success(null)
+                    }
                     "openOverlaySettings" -> {
                         openOverlaySettings()
                         result.success(null)
@@ -254,6 +268,41 @@ class MainActivity : FlutterActivity() {
             requestPermissions(arrayOf(android.Manifest.permission.POST_NOTIFICATIONS), 7101)
         } catch (e: Exception) {
             // 拒绝也不影响锁定本身，只是看不到守护通知。
+        }
+    }
+
+    /** 无障碍守护是否已开启（系统里的 enabled_accessibility_services 有没有我们）。 */
+    private fun isAccessibilityEnabled(): Boolean {
+        val expected = "$packageName/${AppGuardService::class.java.name}"
+        val enabled = Settings.Secure.getString(
+            contentResolver, Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES
+        ) ?: return false
+        return enabled.split(':').any { it.equals(expected, ignoreCase = true) }
+    }
+
+    private fun openAccessibility() {
+        try {
+            startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+        } catch (e: Exception) {
+            Log.w("MainActivity", "打开无障碍设置失败", e)
+        }
+    }
+
+    /** 打开 Shizuku（没装就跳下载页）。 */
+    private fun openShizuku() {
+        val pkg = "moe.shizuku.privileged.api"
+        val launch = packageManager.getLaunchIntentForPackage(pkg)
+        try {
+            if (launch != null) {
+                startActivity(launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+            } else {
+                startActivity(
+                    Intent(Intent.ACTION_VIEW, Uri.parse("https://shizuku.rikka.app/"))
+                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                )
+            }
+        } catch (e: Exception) {
+            Log.w("MainActivity", "打开 Shizuku 失败", e)
         }
     }
 

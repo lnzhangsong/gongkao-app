@@ -47,3 +47,12 @@ kotlin {
 flutter {
     source = "../.."
 }
+
+dependencies {
+    // Shizuku：拿到 shell 权限后才能真正 force-stop 别的应用
+    // （普通应用只能 killBackgroundProcesses，杀不掉有前台服务的进程）。
+    // 锁在 12.2.0：13.x 把 Shizuku.newProcess 收回成 private，改走内部
+    // IShizukuService 才能执行命令，没必要为此引一层隐藏 API。
+    implementation("dev.rikka.shizuku:api:12.2.0")
+    implementation("dev.rikka.shizuku:provider:12.2.0")
+}

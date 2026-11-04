@@ -155,6 +155,29 @@ class Kiosk {
     return out;
   }
 
+  /// Shizuku 状态：`not_installed` / `not_running` / `denied` / `ready`。
+  ///
+  /// 有 Shizuku 才能 force-stop（连前台服务一起停、不会自启）；
+  /// 没有就只能拦前台 + 杀后台，VPN 这类常驻服务杀不掉。
+  static Future<String> shizukuStatus() async =>
+      await _invoke<String>('shizukuStatus') ?? 'not_installed';
+
+  /// 向 Shizuku 申请授权，返回申请后的状态（用户点弹窗才有变化，建议稍后再查一次）。
+  static Future<String> requestShizuku() async =>
+      await _invoke<String>('requestShizuku') ?? 'not_installed';
+
+  static Future<void> openShizuku() async {
+    await _invoke<void>('openShizuku');
+  }
+
+  /// 无障碍守护是否已开启。关着时拦截要等轮询，慢约 1 秒。
+  static Future<bool> accessibilityEnabled() async =>
+      await _invoke<bool>('accessibilityStatus') ?? false;
+
+  static Future<void> openAccessibility() async {
+    await _invoke<void>('openAccessibility');
+  }
+
   static Future<void> openOverlaySettings() async {
     await _invoke<void>('openOverlaySettings');
   }

@@ -1,7 +1,11 @@
 package com.gongkao.gongkao_pad
 
 import android.accessibilityservice.AccessibilityService
+import android.app.ActivityManager
+import android.content.Context
 import android.content.pm.PackageManager
+import android.os.Handler
+import android.os.Looper
 import android.util.Log
 import android.view.accessibility.AccessibilityEvent
 import android.widget.Toast
@@ -28,6 +32,8 @@ class AppGuardService : AccessibilityService() {
     private var lastPkg: String? = null
     private var lastAt = 0L
 
+    private val handler = Handler(Looper.getMainLooper())
+
     override fun onServiceConnected() {
         super.onServiceConnected()
         Log.i(TAG, "无障碍守护已连接")
@@ -50,9 +56,27 @@ class AppGuardService : AccessibilityService() {
         Log.i(TAG, "拦截 $pkg，解除于 $end")
         performGlobalAction(GLOBAL_ACTION_HOME)
         toast("「${labelOf(pkg)}」在限制时段内，${fmt(end)} 之后可用")
+        // 等回桌面的动画走完再动手，否则会看到应用残留一帧。
+        handler.postDelayed({ terminate(pkg) }, TERMINATE_DELAY_MS)
     }
 
     override fun onInterrupt() = Unit
+
+    /**
+     * 停掉目标应用的所有进程。
+     *
+     * 有 Shizuku 就走 force-stop（连前台服务一起停、不会自启）；
+     * 没有就退回到 killBackgroundProcesses，至少把后台进程清掉。
+     */
+    private fun terminate(pkg: String) {
+        if (ShizukuShell.forceStop(pkg)) return
+        try {
+            val am = getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
+            am.killBackgroundProcesses(pkg)
+        } catch (e: Exception) {
+            Log.w(TAG, "killBackgroundProcesses failed for $pkg", e)
+        }
+    }
 
     private fun toast(msg: String) {
         try {
@@ -72,6 +96,9 @@ class AppGuardService : AccessibilityService() {
     companion object {
         private const val TAG = "AppGuard"
         private const val REPEAT_GUARD_MS = 2000L
+
+        /** 回桌面之后等多久再停进程：避开窗口退出动画，否则会残留一帧。 */
+        private const val TERMINATE_DELAY_MS = 400L
 
         private fun fmt(epochMs: Long): String =
             SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(epochMs))

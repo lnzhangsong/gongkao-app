@@ -167,6 +167,8 @@ class AppWatchService : Service() {
         SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(epochMs))
 
     private fun killTarget(pkg: String) {
+        // 有 Shizuku 就 force-stop（连前台服务一起停、不会自启），否则尽力杀后台。
+        if (ShizukuShell.forceStop(pkg)) return
         try {
             val am = getSystemService(Context.ACTIVITY_SERVICE) as android.app.ActivityManager
             am.killBackgroundProcesses(pkg)

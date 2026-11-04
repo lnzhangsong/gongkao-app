@@ -38,6 +38,12 @@ class _LockSettingsPageState extends State<LockSettingsPage>
   /// 读取状态的序号，防止并发返回时旧值覆盖新值。
   int _kioskSeq = 0;
 
+  /// 无障碍守护是否开启：开着才能「点开即弹回」，不开就要等轮询。
+  bool _a11yOn = false;
+
+  /// Shizuku 状态：not_installed / not_running / denied / ready。
+  String _shizuku = 'unknown';
+
   Settings get _settings => widget.settings;
 
   @override
@@ -46,6 +52,7 @@ class _LockSettingsPageState extends State<LockSettingsPage>
     _settings.addListener(_onChanged);
     WidgetsBinding.instance.addObserver(this);
     _reloadKiosk();
+    _reloadGuard();
   }
 
   @override
@@ -58,7 +65,21 @@ class _LockSettingsPageState extends State<LockSettingsPage>
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     // 去系统设置授权后返回，必须重新读一次，否则界面一直停在旧状态。
-    if (state == AppLifecycleState.resumed) _reloadKiosk();
+    if (state == AppLifecycleState.resumed) {
+      _reloadKiosk();
+      _reloadGuard();
+    }
+  }
+
+  /// 刷新「无障碍 / Shizuku」两个前置条件。
+  Future<void> _reloadGuard() async {
+    final bool a11y = await Kiosk.accessibilityEnabled();
+    final String shizuku = await Kiosk.shizukuStatus();
+    if (!mounted) return;
+    setState(() {
+      _a11yOn = a11y;
+      _shizuku = shizuku;
+    });
   }
 
   void _onChanged() {
@@ -427,10 +448,103 @@ class _LockSettingsPageState extends State<LockSettingsPage>
           style: TextStyle(fontSize: 11.5, height: 1.5, color: Colors.white30),
         ),
         const SizedBox(height: 10),
+        _guardStatusRow(),
         for (final AppLimit l in limits)
           _appLimitRow(l, activeEnd: active[l.package]),
         _addAppButton(),
       ],
+    );
+  }
+
+  /// 拦截生效需要两个前置条件：
+  /// 无障碍（窗口一出现就反应）+ Shizuku（能彻底停掉进程，含 VPN 常驻服务）。
+  Widget _guardStatusRow() {
+    final bool shizukuReady = _shizuku == 'ready';
+    final bool allGood = _a11yOn && shizukuReady;
+
+    final String text;
+    final String action;
+    final VoidCallback? onTap;
+
+    if (!_a11yOn) {
+      text = '无障碍守护未开启：点开应用要等约 1 秒才弹回';
+      action = '去开启';
+      onTap = () => Kiosk.openAccessibility();
+    } else if (_shizuku == 'not_installed') {
+      text = '未装 Shizuku：只能拦界面，VPN 这类常驻进程杀不掉';
+      action = '去安装';
+      onTap = () => Kiosk.openShizuku();
+    } else if (_shizuku == 'not_running') {
+      text = 'Shizuku 未运行：启动它之后才能彻底停掉应用';
+      action = '去启动';
+      onTap = () => Kiosk.openShizuku();
+    } else if (_shizuku == 'denied') {
+      text = 'Shizuku 未授权：授权后才能停掉应用的常驻进程';
+      action = '去授权';
+      onTap = () async {
+        await Kiosk.requestShizuku();
+        await Future<void>.delayed(const Duration(seconds: 2));
+        await _reloadGuard();
+      };
+    } else if (shizukuReady) {
+      text = '已就绪：点开受限应用会立刻弹回并彻底停止';
+      action = '';
+      onTap = null;
+    } else {
+      text = '正在检查 Shizuku 状态…';
+      action = '';
+      onTap = null;
+    }
+
+    final Color tint =
+        allGood ? const Color(0xFF16A34A) : const Color(0xFFF59E0B);
+    final Color iconColor =
+        allGood ? const Color(0xFF4ADE80) : const Color(0xFFFBBF24);
+
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 12),
+      child: Material(
+        color: tint.withValues(alpha: 0.14),
+        borderRadius: BorderRadius.circular(12),
+        child: InkWell(
+          onTap: onTap,
+          borderRadius: BorderRadius.circular(12),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+            child: Row(
+              children: <Widget>[
+                Icon(
+                  allGood
+                      ? Icons.verified_rounded
+                      : Icons.warning_amber_rounded,
+                  size: 16,
+                  color: iconColor,
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    text,
+                    style: const TextStyle(
+                      fontSize: 11.5,
+                      height: 1.4,
+                      color: Colors.white70,
+                    ),
+                  ),
+                ),
+                if (action.isNotEmpty)
+                  Text(
+                    action,
+                    style: const TextStyle(
+                      fontSize: 11.5,
+                      fontWeight: FontWeight.w600,
+                      color: Color(0xFF60A5FA),
+                    ),
+                  ),
+              ],
+            ),
+          ),
+        ),
+      ),
     );
   }
 
