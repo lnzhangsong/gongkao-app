@@ -91,16 +91,21 @@ class AppWatchService : Service() {
                 // 每个周期都判定，不看「是不是刚切过来」：
                 // 应用一直开着、到点进入限用时段时包名并没有变化，
                 // 按变化判定就会永远漏掉这一种情况（这正是「到点没关」的原因）。
-                if (hit != null && (fg != lastBlockPkg || now - lastBlockAt > BLOCK_DEBOUNCE_MS)) {
-                    lastBlockPkg = fg
-                    lastBlockAt = now
-                    if (AppGuardService.connected) {
-                        // 无障碍在线时由它处理：更快，还能替用户点「强行停止」。
-                        // 两边都动手只会让桌面被推两次、提示重复一遍。
-                        Log.d(TAG, "无障碍在线，轮询跳过 $fg")
-                    } else {
-                        Log.i(TAG, "拦截 $fg，解除于 ${hit.end}（无障碍未开启，走兜底）")
-                        kickOut(fg, hit.end)
+                if (hit != null) {
+                    when {
+                        // 正在替用户点「强行停止」，别去打断那个流程。
+                        AppGuardService.busy -> Unit
+                        // 无障碍刚处理过：短暂让位，免得两边同时推桌面。
+                        AppGuardService.connected &&
+                            now - AppGuardService.lastBlockAt < GUARD_GRACE_MS -> {
+                            Log.d(TAG, "无障碍刚处理过 $fg，轮询让位")
+                        }
+                        fg != lastBlockPkg || now - lastBlockAt > BLOCK_DEBOUNCE_MS -> {
+                            lastBlockPkg = fg
+                            lastBlockAt = now
+                            Log.i(TAG, "拦截 $fg，解除于 ${hit.end}（轮询兜底）")
+                            kickOut(fg, hit.end)
+                        }
                     }
                 }
             } else {
@@ -255,6 +260,15 @@ class AppWatchService : Service() {
 
         /** 同一个应用重复拉起拦截页的最小间隔，避免和 startActivity 的时序打架。 */
         private const val BLOCK_DEBOUNCE_MS = 2500L
+
+        /**
+         * 无障碍刚拦过之后的让位时长。
+         *
+         * 只是「别抢它的活」，不是「放手不管」：无障碍在 MIUI 上偶尔会漏事件
+         * （用户隔一两秒再点一次就是典型），超过这个时长轮询照常兜底，
+         * 否则漏一次就等于那个应用整段限制期都进得去。
+         */
+        private const val GUARD_GRACE_MS = 3000L
 
         /** 回看的窗口：够覆盖一次前后台切换，又不至于每次扫太久。 */
         private const val LOOKBACK_MS = 8000L

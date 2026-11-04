@@ -36,9 +36,12 @@ import java.util.Locale
  */
 class AppGuardService : AccessibilityService() {
 
-    /** 上一次踢的是谁、什么时候踢的，抑制应用反复重建窗口导致的连踢。 */
-    private var lastPkg: String? = null
-    private var lastAt = 0L
+    /** 上一次执行「回桌面」的时刻，只用来节流动作，不用来决定是否拦截。 */
+    private var lastHomeAt = 0L
+
+    /** 上一次弹提示的对象与时刻，避免同一秒里重复 toast。 */
+    private var lastToastPkg: String? = null
+    private var lastToastAt = 0L
 
     /** 正在执行「彻底停止」的目标；非 null 时说明流程进行中。 */
     private var stopPkg: String? = null
@@ -62,6 +65,7 @@ class AppGuardService : AccessibilityService() {
 
     override fun onDestroy() {
         connected = false
+        busy = false
         handler.removeCallbacksAndMessages(null)
         super.onDestroy()
     }
@@ -95,17 +99,35 @@ class AppGuardService : AccessibilityService() {
         val now = System.currentTimeMillis()
         val hit = AppLimitSchedule.hit(limits, KioskPrefs(this), pkg, now) ?: return
 
-        if (pkg == lastPkg && now - lastAt < REPEAT_GUARD_MS) return
-        lastPkg = pkg
-        lastAt = now
-
+        // 不按「包名 + 时间窗」跳过判定：那样用户隔一两秒再点一次就会整段放行，
+        // 而应用一旦真的站稳前台，就不会再有窗口事件把它踢出来了。
+        // 改成一概判定，只对「动作」做节流——回桌面重复执行无害，卡顿才要避免。
+        markBlocked(now)
         Log.i(TAG, "拦截 $pkg，解除于 ${hit.end}，彻底停止=${hit.deep}")
         if (hit.deep) {
             // 直接跳到应用详情页：让设置页盖住受限应用，比「先回桌面再跳」少闪一次。
             beginDeepStop(pkg, hit.end)
         } else {
+            kickHome(pkg, hit.end)
+        }
+    }
+
+    /** 退回桌面，附带一次节流的提示。 */
+    private fun kickHome(pkg: String, end: Long) {
+        val now = System.currentTimeMillis()
+        if (now - lastHomeAt >= HOME_THROTTLE_MS) {
+            lastHomeAt = now
             performGlobalAction(GLOBAL_ACTION_HOME)
-            toast("「${labelOf(pkg)}」在限制时段内，${fmt(hit.end)} 之后可用")
+            // 顶回桌面后补一刀：普通应用没有 force-stop 权限，
+            // killBackgroundProcesses 只能清掉「已不在前台」的进程，
+            // 但足以让它停止发声/停止后台工作，重新打开就是冷启动。
+            // 延后一点，等它真的退到后台再杀，否则会被系统判定为前台而无效。
+            handler.postDelayed({ killBackground(pkg) }, KILL_DELAY_MS)
+        }
+        if (pkg != lastToastPkg || now - lastToastAt >= TOAST_THROTTLE_MS) {
+            lastToastPkg = pkg
+            lastToastAt = now
+            toast("「${labelOf(pkg)}」在限制时段内，${fmt(end)} 之后可用")
         }
     }
 
@@ -113,7 +135,9 @@ class AppGuardService : AccessibilityService() {
 
     private fun beginDeepStop(pkg: String, end: Long) {
         stopPkg = pkg
+        busy = true
         clicked = false
+        markBlocked(System.currentTimeMillis())
         stopDeadline = System.currentTimeMillis() + STOP_TIMEOUT_MS
         toast("「${labelOf(pkg)}」在限制时段内，${fmt(end)} 之后可用")
 
@@ -178,6 +202,7 @@ class AppGuardService : AccessibilityService() {
 
     private fun finishStop(pkg: String, success: Boolean) {
         stopPkg = null
+        busy = false
         handler.removeCallbacks(retryClick)
         if (success) {
             Log.i(TAG, "已彻底停止 $pkg")
@@ -246,8 +271,14 @@ class AppGuardService : AccessibilityService() {
     companion object {
         private const val TAG = "AppGuard"
 
-        /** 同一个应用重复拦截的最小间隔。 */
-        private const val REPEAT_GUARD_MS = 2000L
+        /** 「回桌面」的动作间隔：连续窗口事件只执行一次，避免闪烁和卡顿。 */
+        private const val HOME_THROTTLE_MS = 300L
+
+        /** 同一条提示的最小间隔。 */
+        private const val TOAST_THROTTLE_MS = 2000L
+
+        /** 退回桌面后等多久再清后台：要等它真的不在前台，杀了才有效。 */
+        private const val KILL_DELAY_MS = 600L
 
         /** 整个「点强行停止」流程的上限，超过就回退。 */
         private const val STOP_TIMEOUT_MS = 8000L
@@ -267,9 +298,34 @@ class AppGuardService : AccessibilityService() {
         /** 二次确认框的按钮文案。 */
         private val CONFIRM_TEXTS = listOf("确定", "确认", "强制停止")
 
-        /** 无障碍守护是否在运行；轮询服务据此避免重复处理。 */
+        /** 无障碍守护是否在运行；轮询服务据此调整兜底策略。 */
         @Volatile
         var connected: Boolean = false
+            private set
+
+        /**
+         * 最近一次拦截的时刻。
+         *
+         * [AppWatchService] 用它判断「无障碍刚刚处理过」，只是短暂让位；
+         * 超过宽限期仍然由轮询兜底，避免无障碍漏一次事件就被彻底放行。
+         */
+        @Volatile
+        var lastBlockAt: Long = 0L
+            private set
+
+        /** 记录一次拦截，供轮询服务判断是否需要兜底。 */
+        fun markBlocked(at: Long) {
+            lastBlockAt = at
+        }
+
+        /**
+         * 是否正在执行「彻底停止」流程。
+         *
+         * 流程会在系统设置页停留 1~2 秒，期间前台包名是「设置」，
+         * 轮询要是不知情会把这个过程打断，点击就永远点不到。
+         */
+        @Volatile
+        var busy: Boolean = false
             private set
 
         private fun fmt(epochMs: Long): String =
