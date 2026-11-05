@@ -8,10 +8,28 @@ const int kDayMinutes = 24 * 60;
 /// - `start == end` 视为「全天锁定」；
 /// - `end < start` 视为跨午夜（如 22:00 → 次日 06:00）。
 class LockPeriod {
-  const LockPeriod({required this.start, required this.end});
+  const LockPeriod({
+    required this.start,
+    required this.end,
+    this.locked = false,
+    this.allowSkip = true,
+  });
 
   final int start;
   final int end;
+
+  /// 是否给这一条单独上锁。
+  ///
+  /// 上锁后：**只要这一段正在生效**，它就不能被编辑、不能被删除，锁本身也解不开；
+  /// 不在生效期间的窗口里照常能改。这样「改规则」这条破戒路径在当下被堵住，
+  /// 但事后还能正常维护规则（不至于一旦锁上就永远动不了）。
+  final bool locked;
+
+  /// 这一段生效时，锁屏上还留不留「提前解锁本次」。
+  ///
+  /// 关掉就是真锁死：到点之后除了等，没有别的路。默认开——
+  /// 大多数人需要一个应急口，只有想认真断掉退路时才关。
+  final bool allowSkip;
 
   bool get isAllDay => start == end;
   bool get crossesMidnight => end < start;
@@ -23,21 +41,46 @@ class LockPeriod {
     return d == 0 ? kDayMinutes : d;
   }
 
-  /// 解析持久化格式 "480-720"；非法返回 null。
+  /// 解析持久化格式。
+  ///
+  /// `480-720`（旧格式，未上锁、可放行）/ `480-720-1`（只带锁标记）/
+  /// `480-720-1-0`（带锁 + 禁止放行）。段数不足时取默认值。
   static LockPeriod? parse(String raw) {
     final List<String> parts = raw.split('-');
-    if (parts.length != 2) return null;
+    if (parts.length < 2 || parts.length > 4) return null;
     final int? a = int.tryParse(parts[0]);
     final int? b = int.tryParse(parts[1]);
     if (a == null || b == null) return null;
     if (a < 0 || a >= kDayMinutes || b < 0 || b >= kDayMinutes) return null;
-    return LockPeriod(start: a, end: b);
+    return LockPeriod(
+      start: a,
+      end: b,
+      locked: parts.length > 2 && parts[2] == '1',
+      allowSkip: parts.length <= 3 || parts[3] == '1',
+    );
   }
 
-  String encode() => '$start-$end';
+  /// 保持旧格式不变：只有需要额外状态时才追加字段，减少老数据的迁移面。
+  String encode() {
+    if (!locked && allowSkip) return '$start-$end';
+    return '$start-$end-${locked ? 1 : 0}-${allowSkip ? 1 : 0}';
+  }
 
-  LockPeriod copyWith({int? start, int? end}) =>
-      LockPeriod(start: start ?? this.start, end: end ?? this.end);
+  /// 只给原生用的「开始-结束」：原生只管到点锁屏，不关心锁与放行。
+  String encodeSpan() => '$start-$end';
+
+  LockPeriod copyWith({
+    int? start,
+    int? end,
+    bool? locked,
+    bool? allowSkip,
+  }) =>
+      LockPeriod(
+        start: start ?? this.start,
+        end: end ?? this.end,
+        locked: locked ?? this.locked,
+        allowSkip: allowSkip ?? this.allowSkip,
+      );
 
   /// 展示文案："08:00 → 12:00" / "22:00 → 次日 06:00" / "全天"。
   String get label {
@@ -63,6 +106,24 @@ class LockSchedule {
   final List<LockPeriod> periods;
 
   bool get isEmpty => periods.isEmpty;
+
+  /// 此刻生效的段里，是否有「关掉了提前解锁」的。
+  ///
+  /// 判据取「任一段禁止」而非「全部允许」：多个段重叠时，只要其中一段
+  /// 明确设了不许放行，就不该给出口，否则那条设置等于没设。
+  bool skipBlockedNow(DateTime now) {
+    for (final LockPeriod p in periods) {
+      if (p.allowSkip) continue;
+      for (int offset = -1; offset <= 1; offset++) {
+        final DateTime day = DateTime(now.year, now.month, now.day + offset);
+        if (now.isBefore(p.startOn(day)) || !now.isBefore(p.endOn(day))) {
+          continue;
+        }
+        return true;
+      }
+    }
+    return false;
+  }
 
   /// 此刻生效中、且**结束最晚**的那一段（决定解锁时刻）。
   ({DateTime start, DateTime end})? activeWindow(DateTime now) {

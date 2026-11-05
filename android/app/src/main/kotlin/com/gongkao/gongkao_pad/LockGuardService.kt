@@ -59,7 +59,8 @@ class LockGuardService : Service() {
         override fun run() {
             if (!ticking) return
             val now = System.currentTimeMillis()
-            val end = KioskSchedule.lockedEnd(KioskPrefs(this@LockGuardService), now)
+            val prefs = KioskPrefs(this@LockGuardService)
+            val end = KioskSchedule.lockedEnd(prefs, now)
             if (end == null) {
                 // 已过锁定段：先把「下一段」交给系统闹钟，再收工，避免常驻通知打扰。
                 // 少了这一步，段一结束就再没人记得下一段几点开始（放行后尤其明显）。
@@ -68,6 +69,7 @@ class LockGuardService : Service() {
                 return
             }
             startAsForeground(end)
+
             if (!AppForeground.alive) {
                 launchApp()
                 // 后台 startActivity 在 Android 15/16 上会被系统中止，

@@ -110,7 +110,7 @@ class _PhoneLockPageState extends State<PhoneLockPage>
       enabled: _settings.lockEnabled,
       autoStart: _settings.lockAutoStart,
       periods:
-          _settings.lockPeriods.map((LockPeriod p) => p.encode()).toList(),
+          _settings.lockPeriods.map((LockPeriod p) => p.encodeSpan()).toList(),
       skipAt: _settings.lockSkipAt,
       skipUntil: _settings.lockSkipUntil,
       appLimits:
@@ -536,6 +536,9 @@ class _PhoneLockPageState extends State<PhoneLockPage>
 
   Widget _locked(DateTime end) {
     final Duration left = end.difference(_now);
+    // 某一段关掉了提前解锁 → 这一段里连出口都不给。
+    final bool canSkip =
+        !LockSchedule(_settings.lockPeriods).skipBlockedNow(DateTime.now());
     return Container(
       color: const Color(0xFF07080A),
       child: Stack(
@@ -576,6 +579,22 @@ class _PhoneLockPageState extends State<PhoneLockPage>
                   '${_two(end.hour)}:${_two(end.minute)}',
                   style: const TextStyle(fontSize: 14, color: Colors.white38),
                 ),
+                if (_settings.lockMotto.isNotEmpty) ...<Widget>[
+                  const SizedBox(height: 26),
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 34),
+                    child: Text(
+                      _settings.lockMotto,
+                      textAlign: TextAlign.center,
+                      style: const TextStyle(
+                        fontSize: 15,
+                        height: 1.7,
+                        color: Colors.white70,
+                        letterSpacing: 0.4,
+                      ),
+                    ),
+                  ),
+                ],
                 const SizedBox(height: 12),
                 Row(
                   mainAxisSize: MainAxisSize.min,
@@ -606,16 +625,30 @@ class _PhoneLockPageState extends State<PhoneLockPage>
             left: 0,
             right: 0,
             bottom: 28 + MediaQuery.paddingOf(context).bottom,
-            child: Center(
-              child: TextButton(
-                onPressed: () => _skipCurrent(end),
-                style: TextButton.styleFrom(
-                  foregroundColor: Colors.white38,
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 18, vertical: 10),
-                ),
-                child: const Text('提前解锁本次', style: TextStyle(fontSize: 13)),
-              ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: <Widget>[
+                if (canSkip)
+                  TextButton(
+                    onPressed: () => _skipCurrent(end),
+                    style: TextButton.styleFrom(
+                      foregroundColor: Colors.white38,
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 18, vertical: 10),
+                    ),
+                    child: const Text('提前解锁本次',
+                        style: TextStyle(fontSize: 13)),
+                  )
+                else
+                  const Padding(
+                    padding:
+                        EdgeInsets.symmetric(horizontal: 18, vertical: 10),
+                    child: Text(
+                      '本时段已关闭提前解锁',
+                      style: TextStyle(fontSize: 12, color: Colors.white24),
+                    ),
+                  ),
+              ],
             ),
           ),
         ],

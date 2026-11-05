@@ -66,9 +66,7 @@ class MainActivity : FlutterActivity() {
                         result.success(kioskStatus())
                     }
                     "syncAppLimits" -> {
-                        syncAppLimits(
-                            call.argument<List<String>>("rules") ?: emptyList()
-                        )
+                        syncAppLimits(call.argument<List<String>>("rules") ?: emptyList())
                         result.success(null)
                     }
                     "listApps" -> result.success(listLaunchableApps())
@@ -206,8 +204,10 @@ class MainActivity : FlutterActivity() {
         prefs.skipAt = skipAt
         prefs.skipUntil = skipUntil
         prefs.periods = periods.mapNotNull { raw ->
+            // 只认前两段（开始-结束）。Dart 那边偶尔会在后面追加锁/放行标记，
+            // 以前这里用 != 2 会把它们整段丢掉，导致到点不锁。
             val parts = raw.split('-')
-            if (parts.size != 2) return@mapNotNull null
+            if (parts.size < 2) return@mapNotNull null
             val a = parts[0].toIntOrNull() ?: return@mapNotNull null
             val b = parts[1].toIntOrNull() ?: return@mapNotNull null
             intArrayOf(a, b)
@@ -227,7 +227,8 @@ class MainActivity : FlutterActivity() {
      * 通知栏还挂着一条「应用限制生效中」会很怪。
      */
     private fun syncAppLimits(rules: List<String>) {
-        AppLimitPrefs(this).raw = rules
+        val prefs = AppLimitPrefs(this)
+        prefs.raw = rules
         AppWatchService.sync(this)
     }
 

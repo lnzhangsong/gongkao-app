@@ -14,7 +14,7 @@ class AppLimit {
     required this.label,
     this.periods = const <LockPeriod>[],
     this.duringLock = true,
-    this.deepStop = false,
+    this.locked = false,
   });
 
   /// 应用包名，如 `com.tencent.mm`。
@@ -32,14 +32,18 @@ class AppLimit {
   /// 放行了，但在锁机时段内这类应用依然不该用。
   final bool duringLock;
 
-  /// 命中后是否「彻底停止」这个应用（连前台服务一起停）。
+  /// 是否给这一条单独上锁。
   ///
-  /// 实现方式：无障碍跳到该应用的系统详情页，替用户点一次「强行停止」。
-  /// 普通应用没有 force-stop 权限，只能 killBackgroundProcesses，
-  /// 杀不掉带常驻服务的应用（VPN、音乐、下载）。
+  /// 上锁后：**只要它正在限制中**，规则就不能改、不能删，锁也解不开；
+  /// 不在限制时段里时可以正常修改。
+  final bool locked;
+
+  /// 命中后如何处理：交给原生侧 `pm disable-user` 直接禁用（需要 Shizuku），
+  /// 没有 Shizuku 时降级成「点开再弹回桌面」。
   ///
-  /// 代价是那一下会闪一次设置页，所以默认关闭、按应用单独开。
-  final bool deepStop;
+  /// 早期版本这里还有一个「彻底停止」开关（无障碍跳应用详情页点「强行停止」）。
+  /// 走 ADB 真正禁用之后它就没意义了——应用已经被禁用，进程自然也起不来，
+  /// 而且那个方案每次都要闪一下系统设置页。现已移除。
 
   /// 至少有一条规则才算启用。
   bool get enabled => duringLock || periods.isNotEmpty;
@@ -51,7 +55,6 @@ class AppLimit {
       parts.add(periods.map((LockPeriod p) => p.label).join('、'));
     }
     if (duringLock) parts.add('锁定时段内也拦');
-    if (deepStop) parts.add('彻底停止');
     if (parts.isEmpty) return '未设置时段';
     return parts.join(' · ');
   }
@@ -60,25 +63,26 @@ class AppLimit {
     String? label,
     List<LockPeriod>? periods,
     bool? duringLock,
-    bool? deepStop,
+    bool? locked,
   }) =>
       AppLimit(
         package: package,
         label: label ?? this.label,
         periods: periods ?? this.periods,
         duringLock: duringLock ?? this.duringLock,
-        deepStop: deepStop ?? this.deepStop,
+        locked: locked ?? this.locked,
       );
 
-  /// 持久化格式：`包名|名称|是否叠加|480-720,900-1080|是否彻底停止`。
+  /// 持久化格式：`包名|名称|是否叠加|480-720,900-1080|l`。
   ///
   /// 名称走 [Uri.encodeComponent]，应用名里带 `|` 也不会把格式拆坏。
-  /// 末尾的「彻底停止」是后加的字段，旧数据只有 4 段，解析时按 false 处理。
+  /// 末段 `l` 表示这条已上锁；更早的版本这一位存的是「彻底停止」(`1`)，
+  /// 用不同字符区分，老数据不会被误读成已上锁。
   String encode() {
     final String name = Uri.encodeComponent(label);
     final String rules =
         periods.map((LockPeriod p) => p.encode()).join(',');
-    return '$package|$name|${duringLock ? 1 : 0}|$rules|${deepStop ? 1 : 0}';
+    return '$package|$name|${duringLock ? 1 : 0}|$rules|${locked ? 'l' : ''}';
   }
 
   /// 解析持久化串；格式不对返回 null（旧数据 / 脏数据一律丢弃）。
@@ -95,12 +99,14 @@ class AppLimit {
         if (p != null) periods.add(p);
       }
     }
+    // 旧版本在末尾多存了一段「彻底停止」（'1' 或 '0'），与这里的 'l' 不同，
+    // 不会被误判成已上锁。
     return AppLimit(
       package: pkg,
       label: decoded.isEmpty ? pkg : decoded,
       periods: periods,
       duringLock: parts[2] == '1',
-      deepStop: parts.length > 4 && parts[4] == '1',
+      locked: parts.length > 4 && parts[4] == 'l',
     );
   }
 

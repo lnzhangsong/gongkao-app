@@ -184,4 +184,54 @@ void main() {
       );
     });
   });
+
+  // 这两个标记是后加的字段，旧版本存下来的时段串必须还能读。
+  group('时段编码兼容', () {
+    test('两段旧格式：未上锁、可放行', () {
+      final LockPeriod p = LockPeriod.parse('480-720')!;
+      expect(p.locked, isFalse);
+      expect(p.allowSkip, isTrue);
+    });
+
+    test('三段（上一版只带锁）：默认可放行', () {
+      final LockPeriod p = LockPeriod.parse('480-720-1')!;
+      expect(p.locked, isTrue);
+      expect(p.allowSkip, isTrue);
+    });
+
+    test('四段：锁 + 禁放行，编码能原样读回', () {
+      const LockPeriod p = LockPeriod(start: 480, end: 720, locked: true, allowSkip: false);
+      final LockPeriod back = LockPeriod.parse(p.encode())!;
+      expect(back.locked, isTrue);
+      expect(back.allowSkip, isFalse);
+    });
+
+    test('默认设置仍编码成两段，不制造无谓的格式变化', () {
+      expect(const LockPeriod(start: 480, end: 720).encode(), '480-720');
+    });
+
+    test('只给原生的是纯时间，不带标记', () {
+      const LockPeriod p = LockPeriod(start: 480, end: 720, locked: true, allowSkip: false);
+      expect(p.encodeSpan(), '480-720');
+    });
+  });
+
+  group('禁放行的时段不给出口', () {
+    test('关掉放行且正在生效 → 锁屏不该给「提前解锁」', () {
+      final LockSchedule s = LockSchedule(<LockPeriod>[
+        const LockPeriod(start: 8 * 60, end: 12 * 60, allowSkip: false),
+      ]);
+      expect(s.skipBlockedNow(at(2026, 11, 5, 9)), isTrue);
+      expect(s.skipBlockedNow(at(2026, 11, 5, 13)), isFalse);
+    });
+
+    test('重叠时只要有一段禁止，就不给出口', () {
+      final LockSchedule s = LockSchedule(<LockPeriod>[
+        const LockPeriod(start: 8 * 60, end: 12 * 60),
+        const LockPeriod(start: 10 * 60, end: 14 * 60, allowSkip: false),
+      ]);
+      expect(s.skipBlockedNow(at(2026, 11, 5, 11)), isTrue);
+      expect(s.skipBlockedNow(at(2026, 11, 5, 9)), isFalse);
+    });
+  });
 }

@@ -1,17 +1,15 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  订阅「窗口状态变化」和「窗口内容变化」两类事件：
-  - 前者用于受限应用一露头就退回桌面，比轮询快一个数量级；
-  - 后者用于在系统设置页里找到「强行停止」按钮并点击（只对标记了「彻底停止」的应用）。
+  只订阅「窗口状态变化」：受限应用一露头就退回桌面，比轮询快一个数量级。
 
-  因此 canRetrieveWindowContent 必须为 true——要点击别人界面上的按钮，
-  就得能读到那棵节点树。用途仅限查找「强行停止 / 确定」这类按钮，
-  不采集、不上传任何屏幕内容。
+  退回桌面用的是 GLOBAL_ACTION_HOME，不需要读别人界面上的任何东西，
+  所以 canRetrieveWindowContent 保持 false，事件类型也不需要
+  typeWindowContentChanged。
 -->
 <accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
-    android:accessibilityEventTypes="typeWindowStateChanged|typeWindowContentChanged"
+    android:accessibilityEventTypes="typeWindowStateChanged"
     android:accessibilityFeedbackType="feedbackGeneric"
     android:accessibilityFlags="flagDefault"
-    android:canRetrieveWindowContent="true"
+    android:canRetrieveWindowContent="false"
     android:notificationTimeout="0"
     android:description="@string/app_guard_desc" />

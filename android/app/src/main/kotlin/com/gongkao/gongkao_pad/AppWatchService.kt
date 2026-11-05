@@ -105,8 +105,6 @@ class AppWatchService : Service() {
                 // 按变化判定就会永远漏掉这一种情况（这正是「到点没关」的原因）。
                 if (hit != null) {
                     when {
-                        // 正在替用户点「强行停止」，别去打断那个流程。
-                        AppGuardService.busy -> Unit
                         // 无障碍刚处理过：短暂让位，免得两边同时推桌面。
                         AppGuardService.connected &&
                             now - AppGuardService.lastBlockAt < GUARD_GRACE_MS -> {
@@ -147,6 +145,7 @@ class AppWatchService : Service() {
             .map { it.pkg }
             .filter { it != packageName }
             .filter { isThirdParty(it) }
+            .filter { !isCritical(it) }
             .filter { AppLimitSchedule.hit(limits, kiosk, it, now) != null }
             .toSet()
 
@@ -196,6 +195,47 @@ class AppWatchService : Service() {
         false
     }
 
+    /**
+     * 关键组件：电话、短信、桌面、设置、输入法。
+     *
+     * MIUI 把不少系统应用装在 `/data` 里，`FLAG_SYSTEM` 是空的——
+     * 时钟、计算器都因此被当成「第三方」禁过。光看 flag 挡不住，
+     * 所以这里再按「当前默认应用」兜一层：禁掉电话或桌面，人就真没法用手机了。
+     */
+    private fun isCritical(pkg: String): Boolean = criticalPackages.contains(pkg)
+
+    private val criticalPackages: Set<String> by lazy {
+        val out = mutableSetOf(
+            packageName,
+            "android",
+            "com.android.systemui",
+            "com.android.settings",
+            "com.android.phone",
+            "com.android.server.telecom",
+        )
+        fun addResolved(intent: Intent) {
+            try {
+                val resolved = packageManager.resolveActivity(intent, 0)
+                resolved?.activityInfo?.packageName?.let { out.add(it) }
+            } catch (e: Exception) {
+                // 解析不到就算了，不影响其余判定。
+            }
+        }
+        addResolved(Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME))
+        addResolved(Intent(Intent.ACTION_DIAL))
+        addResolved(Intent("android.intent.action.VIEW").setData(
+            android.net.Uri.parse("sms:")
+        ))
+        try {
+            val imm = getSystemService(Context.INPUT_METHOD_SERVICE)
+                as android.view.inputmethod.InputMethodManager
+            imm.enabledInputMethodList.forEach { out.add(it.packageName) }
+        } catch (e: Exception) {
+            // 同上。
+        }
+        out
+    }
+
     private fun loadManaged(): MutableSet<String> =
         (guardPrefs.getStringSet(K_MANAGED, emptySet()) ?: emptySet()).toMutableSet()
 
@@ -231,10 +271,9 @@ class AppWatchService : Service() {
     }
 
     /**
-     * 把受限应用顶回桌面。
+     * 把受限应用顶回桌面并提示。
      *
-     * 刻意不弹全屏拦截页：用户要的是「打不开」，不是「打开之后盖一层」。
-     * 原因用 Toast 说一句就够，不占屏幕、也不用再点一次。
+     * 先回桌面、再补一刀清后台；提示晚一步弹，避免被 HOME 顶掉。
      */
     private fun kickOut(pkg: String, end: Long) {
         try {
@@ -265,8 +304,9 @@ class AppWatchService : Service() {
         SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(epochMs))
 
     private fun killTarget(pkg: String) {
-        // 无障碍没开时只能尽力清后台：有前台服务的应用（VPN/音乐）杀不掉，
-        // 要彻底停得开无障碍、并把该应用标记成「彻底停止」。
+        // 降级路径：只有 Shizuku 不可用（没启动/没授权）时才走到这里。
+        // killBackgroundProcesses 杀不掉带前台服务的应用（VPN/音乐），
+        // 但足以让它停止发声、停止后台工作，重新打开就是冷启动。
         try {
             val am = getSystemService(Context.ACTIVITY_SERVICE) as android.app.ActivityManager
             am.killBackgroundProcesses(pkg)

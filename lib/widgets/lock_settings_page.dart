@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import '../app_limit.dart';
@@ -43,6 +45,18 @@ class _LockSettingsPageState extends State<LockSettingsPage>
   /// 只有 ready 才能 `pm disable-user`，也就是到点把应用真正禁用掉。
   String _shizuku = 'unknown';
 
+  /// 有「已上锁且正在生效」的时段时，自动锁定总开关也跟着只读。
+  ///
+  /// 只管总开关和开机自启：这两项是绕过所有时段的旁路，
+  /// 留着可改等于给了一把万能钥匙。
+  bool _masterLocked = false;
+
+  /// 应用限制里最晚的解除时刻（只统计已上锁、且正在生效的规则）。
+  DateTime? _appLockEnd;
+
+  /// 定时重算 [_locked]：跨过时段边界时页面要自己醒过来。
+  Timer? _ticker;
+
   Settings get _settings => widget.settings;
 
   @override
@@ -52,10 +66,16 @@ class _LockSettingsPageState extends State<LockSettingsPage>
     WidgetsBinding.instance.addObserver(this);
     _reloadKiosk();
     _reloadGuard();
+    _ticker = Timer.periodic(const Duration(seconds: 20), (_) {
+      // 无条件重建：这段里「生效中」标签、解除时刻、只读态都跟当前时间有关，
+      // 与其逐项比对不如整体刷一次，页面不大，代价可以忽略。
+      if (mounted) setState(() {});
+    });
   }
 
   @override
   void dispose() {
+    _ticker?.cancel();
     WidgetsBinding.instance.removeObserver(this);
     _settings.removeListener(_onChanged);
     super.dispose();
@@ -111,6 +131,28 @@ class _LockSettingsPageState extends State<LockSettingsPage>
     final DateTime now = DateTime.now();
     final DateTime? skip = _settings.lockSkipUntil;
     final bool skipped = skip != null && now.isBefore(skip);
+    final DateTime? guardEnd = _lockedEnd(periods, now);
+    // 自动锁定关着就没所谓「锁定期间」：这时总开关必须能自由开关，
+    // 否则会出现「想开却开不了、提示条还说你正在锁定」的怪状态。
+    _masterLocked = guardEnd != null && _settings.lockEnabled;
+
+    // 应用限制：只有当「已上锁的那些规则」里真有正在生效的，才算被保护。
+    // 判据和下面 _appLimitSection 一致——用整机时段本身，不看提前解锁。
+    final Map<String, DateTime> limiting = activeLimits(
+      _settings.appLimits,
+      now,
+      lockEnd: _settings.lockEnabled
+          ? LockSchedule(_settings.lockPeriods).activeEnd(now)
+          : null,
+    );
+    DateTime? appEnd;
+    for (final AppLimit l in _settings.appLimits) {
+      if (!l.locked) continue;
+      final DateTime? e = limiting[l.package];
+      if (e == null) continue;
+      if (appEnd == null || e.isAfter(appEnd)) appEnd = e;
+    }
+    _appLockEnd = appEnd;
     final EdgeInsets insets = MediaQuery.paddingOf(context);
 
     return Scaffold(
@@ -127,6 +169,7 @@ class _LockSettingsPageState extends State<LockSettingsPage>
                 _header(),
                 const SizedBox(height: 18),
                 _masterCard(),
+                if (_masterLocked && guardEnd != null) _lockedNotice(guardEnd),
                 if (skip != null && skipped) _skipNotice(skip),
                 const SizedBox(height: 24),
                 _sectionTitle(
@@ -135,6 +178,13 @@ class _LockSettingsPageState extends State<LockSettingsPage>
                       ? '还没有时段'
                       : '${periods.length} 段 · 每天共 ${_hoursText(totalMin)}',
                 ),
+                const SizedBox(height: 6),
+                const Text(
+                  '右侧两个小图标，从左到右：钥匙 = 这一段还给不给「提前解锁」；'
+                  '锁 = 生效期间不许改这一条。',
+                  style: TextStyle(
+                      fontSize: 11.5, height: 1.5, color: Colors.white30),
+                ),
                 const SizedBox(height: 10),
                 for (int i = 0; i < periods.length; i++)
                   _periodRow(i, periods[i], skipped: skipped),
@@ -142,17 +192,81 @@ class _LockSettingsPageState extends State<LockSettingsPage>
                 const SizedBox(height: 6),
                 _addButton(),
                 const SizedBox(height: 26),
+                _mottoSection(),
+                const SizedBox(height: 26),
                 _appLimitSection(),
                 const SizedBox(height: 26),
                 _strengthSection(),
                 const SizedBox(height: 22),
                 const Text(
-                  '到点自动全屏锁定，可用「提前解锁本次」临时放行；'
-                  '解锁早于开始时按跨午夜（次日）计算。',
+                  '到点自动全屏锁定；留着钥匙的时段可以用「提前解锁本次」临时放行，'
+                  '关掉钥匙的就只能等。解锁早于开始时按跨午夜（次日）计算。',
                   style: TextStyle(
                       fontSize: 12, height: 1.6, color: Colors.white30),
                 ),
               ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// 有加锁的时段正在生效时的提示条。
+  ///
+  /// 「提前解锁」也照样拦：那个只放行屏幕，不放开规则修改。
+  Widget _lockedNotice(DateTime until) {
+    final String hh = until.hour.toString().padLeft(2, '0');
+    final String mm = until.minute.toString().padLeft(2, '0');
+    final DateTime now = DateTime.now();
+    final bool tomorrow =
+        until.year != now.year || until.month != now.month || until.day != now.day;
+    return Container(
+      margin: const EdgeInsets.only(top: 12),
+      padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
+      decoration: BoxDecoration(
+        color: sheetAccent.withValues(alpha: 0.14),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: sheetAccent.withValues(alpha: 0.28)),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: <Widget>[
+          const Icon(Icons.lock_clock_rounded, size: 16, color: Colors.white70),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              '有加锁的时段正在生效，它和上面的总开关都改不了。'
+              '${tomorrow ? '明天 ' : ''}$hh:$mm 解除后可以调整。',
+              style: const TextStyle(
+                  fontSize: 12, height: 1.6, color: Colors.white70),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// 应用限制里的只读提示：只统计已上锁的规则。
+  Widget _appLockNotice(DateTime until) {
+    final String hh = until.hour.toString().padLeft(2, '0');
+    final String mm = until.minute.toString().padLeft(2, '0');
+    return Container(
+      margin: const EdgeInsets.only(bottom: 12),
+      padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
+      decoration: BoxDecoration(
+        color: sheetAccent.withValues(alpha: 0.12),
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Row(
+        children: <Widget>[
+          const Icon(Icons.lock_clock_rounded, size: 15, color: Colors.white60),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              '有加锁的应用正在限制中，它的规则已锁定，最晚 $hh:$mm 后可以调整。',
+              style: const TextStyle(
+                  fontSize: 11.5, height: 1.5, color: Colors.white70),
             ),
           ),
         ],
@@ -255,7 +369,8 @@ class _LockSettingsPageState extends State<LockSettingsPage>
           const Spacer(),
           Switch(
             value: on,
-            onChanged: (bool v) => _settings.setLockEnabled(v),
+            onChanged:
+                _masterLocked ? null : (bool v) => _settings.setLockEnabled(v),
             activeThumbColor: Colors.white,
             activeTrackColor: sheetAccent,
             inactiveThumbColor: Colors.white70,
@@ -291,9 +406,12 @@ class _LockSettingsPageState extends State<LockSettingsPage>
   }
 
   /// 单段：整行可点进编辑弹层；正在生效的段高亮。
+  ///
+  /// 右侧的锁是**这一条自己的**：上锁且正在生效时，这一行点不开、也删不掉。
   Widget _periodRow(int index, LockPeriod p, {required bool skipped}) {
     final bool active =
         LockSchedule(<LockPeriod>[p]).activeEnd(DateTime.now()) != null;
+    final bool sealed = p.locked && active;
     return Padding(
       padding: const EdgeInsets.only(bottom: 10),
       child: Material(
@@ -303,7 +421,7 @@ class _LockSettingsPageState extends State<LockSettingsPage>
         borderRadius: BorderRadius.circular(14),
         clipBehavior: Clip.antiAlias,
         child: InkWell(
-          onTap: () => _editPeriod(index),
+          onTap: sealed ? null : () => _editPeriod(index),
           child: Padding(
             padding: const EdgeInsets.fromLTRB(16, 15, 10, 15),
             child: Row(
@@ -382,12 +500,71 @@ class _LockSettingsPageState extends State<LockSettingsPage>
                   _rowDuration(p.durationMinutes),
                   style: const TextStyle(fontSize: 11, color: Colors.white30),
                 ),
-                const SizedBox(width: 2),
+                _rowSkipButton(
+                  allow: p.allowSkip,
+                  onTap: () => _togglePeriodSkip(index),
+                  onLongPress: () => _emergencyAllowSkip(index),
+                ),
+                _rowLockButton(
+                  locked: p.locked,
+                  sealed: sealed,
+                  onTap: () => _togglePeriodLock(index),
+                  onLongPress: () => _emergencyUnlockPeriod(index),
+                ),
                 const Icon(Icons.chevron_right,
                     size: 18, color: Colors.white24),
               ],
             ),
           ),
+        ),
+      ),
+    );
+  }
+
+  /// 行尾的「放行」开关：钥匙 = 这一段还留着提前解锁，划掉钥匙 = 到点只能等。
+  Widget _rowSkipButton({
+    required bool allow,
+    required VoidCallback onTap,
+    required VoidCallback onLongPress,
+  }) {
+    return InkResponse(
+      onTap: onTap,
+      onLongPress: onLongPress,
+      radius: 22,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 7),
+        child: Icon(
+          allow ? Icons.key_rounded : Icons.key_off_rounded,
+          size: 17,
+          color: allow ? Colors.white54 : sheetAccent,
+        ),
+      ),
+    );
+  }
+
+  /// 行尾的锁：点一下上锁 / 解锁，长按是紧急解除。
+  ///
+  /// 生效期间点它只会得到一句「X 点后才能解除」——这正是要的效果：
+  /// 想改规则的那一下被挡住。长按能强解，但要多按一次并确认，
+  /// 留着是为了「全天时段上锁后把自己关死」这种情况有个出口。
+  Widget _rowLockButton({
+    required bool locked,
+    required bool sealed,
+    required VoidCallback onTap,
+    required VoidCallback onLongPress,
+  }) {
+    return InkResponse(
+      onTap: onTap,
+      onLongPress: onLongPress,
+      radius: 22,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 7),
+        child: Icon(
+          locked ? Icons.lock_rounded : Icons.lock_open_rounded,
+          size: 17,
+          color: locked
+              ? (sealed ? sheetAccent : Colors.white60)
+              : Colors.white24,
         ),
       ),
     );
@@ -427,6 +604,174 @@ class _LockSettingsPageState extends State<LockSettingsPage>
     );
   }
 
+  // ── 锁屏上那句话 ──────────────────────────────────────────────────
+
+  /// 锁屏上那句话：可以自己写，也可以直接挑一句现成的。
+  Widget _mottoSection() {
+    final String motto = _settings.lockMotto;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: <Widget>[
+        _sectionTitle('锁屏上那句话', motto.isEmpty ? '未设置' : '已设置'),
+        const SizedBox(height: 8),
+        const Text(
+          '锁屏时显示在倒计时下面。与其盯着一串数字，不如让它提醒你为什么要坐在这儿。',
+          style: TextStyle(fontSize: 11.5, height: 1.5, color: Colors.white30),
+        ),
+        const SizedBox(height: 10),
+        Material(
+          color: Colors.transparent,
+          child: InkWell(
+            onTap: _editMotto,
+            borderRadius: BorderRadius.circular(14),
+            child: Container(
+              width: double.infinity,
+              padding: const EdgeInsets.symmetric(vertical: 16, horizontal: 14),
+              decoration: BoxDecoration(
+                color: Colors.white.withValues(alpha: 0.04),
+                borderRadius: BorderRadius.circular(14),
+                border: Border.all(color: Colors.white.withValues(alpha: 0.10)),
+              ),
+              child: Row(
+                children: <Widget>[
+                  Expanded(
+                    child: Text(
+                      motto.isEmpty ? '写一句，或从模板里挑' : motto,
+                      style: TextStyle(
+                        fontSize: 13.5,
+                        height: 1.5,
+                        color: motto.isEmpty ? Colors.white38 : Colors.white,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  const Icon(Icons.edit_outlined,
+                      size: 16, color: Colors.white30),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Future<void> _editMotto() async {
+    final TextEditingController controller =
+        TextEditingController(text: _settings.lockMotto);
+    await showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: const Color(0xFF151A21),
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(22)),
+      ),
+      builder: (BuildContext ctx) {
+        return Padding(
+          padding: EdgeInsets.fromLTRB(
+            20,
+            18,
+            20,
+            20 + MediaQuery.viewInsetsOf(ctx).bottom,
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: <Widget>[
+              const Text(
+                '锁屏上那句话',
+                style: TextStyle(
+                  fontSize: 16,
+                  fontWeight: FontWeight.w600,
+                  color: Colors.white,
+                ),
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: controller,
+                maxLength: 40,
+                style: const TextStyle(fontSize: 14, color: Colors.white),
+                decoration: InputDecoration(
+                  hintText: '例如：现在这一小时，只做一件事',
+                  hintStyle: const TextStyle(color: Colors.white24),
+                  counterStyle: const TextStyle(color: Colors.white24),
+                  filled: true,
+                  fillColor: Colors.white.withValues(alpha: 0.05),
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(12),
+                    borderSide: BorderSide.none,
+                  ),
+                ),
+              ),
+              const SizedBox(height: 6),
+              const Text(
+                '模板',
+                style: TextStyle(fontSize: 12, color: Colors.white38),
+              ),
+              const SizedBox(height: 8),
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: <Widget>[
+                  for (final String t in Settings.mottoTemplates)
+                    InkWell(
+                      onTap: () => controller.text = t,
+                      borderRadius: BorderRadius.circular(16),
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 12, vertical: 7),
+                        decoration: BoxDecoration(
+                          color: Colors.white.withValues(alpha: 0.06),
+                          borderRadius: BorderRadius.circular(16),
+                        ),
+                        child: Text(
+                          t,
+                          style: const TextStyle(
+                              fontSize: 12, color: Colors.white60),
+                        ),
+                      ),
+                    ),
+                ],
+              ),
+              const SizedBox(height: 16),
+              Row(
+                children: <Widget>[
+                  TextButton(
+                    onPressed: () {
+                      controller.text = '';
+                      _settings.setLockMotto('');
+                      Navigator.of(ctx).pop();
+                    },
+                    child: const Text('清空',
+                        style: TextStyle(color: Colors.white38)),
+                  ),
+                  const Spacer(),
+                  TextButton(
+                    onPressed: () => Navigator.of(ctx).pop(),
+                    child: const Text('取消',
+                        style: TextStyle(color: Colors.white38)),
+                  ),
+                  TextButton(
+                    onPressed: () {
+                      _settings.setLockMotto(controller.text);
+                      Navigator.of(ctx).pop();
+                    },
+                    child: const Text(
+                      '保存',
+                      style: TextStyle(
+                          color: sheetAccent, fontWeight: FontWeight.w600),
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        );
+      },
+    );
+    controller.dispose();
+  }
+
   // ── 应用限制 ──────────────────────────────────────────────────────
 
   /// 应用限制区块：单独管「某几个应用在某个时段能不能打开」。
@@ -450,14 +795,17 @@ class _LockSettingsPageState extends State<LockSettingsPage>
         ),
         const SizedBox(height: 8),
         const Text(
-          '到点后无法打开，直到时段结束。',
+          '到点后无法打开，直到时段结束。点右侧锁图标可锁住这一条：'
+          '它生效期间改不了、也删不掉。',
           style: TextStyle(fontSize: 11.5, height: 1.5, color: Colors.white30),
         ),
         const SizedBox(height: 10),
         _guardStatusRow(),
+        if (_appLockEnd != null) _appLockNotice(_appLockEnd!),
         for (final AppLimit l in limits)
           _appLimitRow(l, activeEnd: active[l.package]),
         _addAppButton(),
+        const SizedBox(height: 4),
         _restoreButton(),
       ],
     );
@@ -576,11 +924,13 @@ class _LockSettingsPageState extends State<LockSettingsPage>
         borderRadius: BorderRadius.circular(14),
         clipBehavior: Clip.antiAlias,
         child: InkWell(
-          onTap: () => showAppLimitSheet(
-            context,
-            settings: _settings,
-            limit: limit,
-          ),
+          onTap: on && limit.locked
+              ? null
+              : () => showAppLimitSheet(
+                    context,
+                    settings: _settings,
+                    limit: limit,
+                  ),
           child: Padding(
             padding: const EdgeInsets.fromLTRB(16, 13, 10, 13),
             child: Row(
@@ -633,6 +983,12 @@ class _LockSettingsPageState extends State<LockSettingsPage>
                   ),
                 ),
                 const SizedBox(width: 6),
+                _rowLockButton(
+                  locked: limit.locked,
+                  sealed: limit.locked && on,
+                  onTap: () => _toggleAppLock(limit, activeEnd: activeEnd),
+                  onLongPress: () => _emergencyUnlockApp(limit),
+                ),
                 const Icon(Icons.chevron_right,
                     size: 18, color: Colors.white24),
               ],
@@ -787,7 +1143,9 @@ class _LockSettingsPageState extends State<LockSettingsPage>
                         ),
                         Switch(
                           value: _settings.lockAutoStart,
-                          onChanged: (bool v) => _settings.setLockAutoStart(v),
+                          onChanged: _masterLocked
+                              ? null
+                              : (bool v) => _settings.setLockAutoStart(v),
                           activeThumbColor: Colors.white,
                           activeTrackColor: sheetAccent,
                           inactiveThumbColor: Colors.white70,
@@ -877,6 +1235,168 @@ class _LockSettingsPageState extends State<LockSettingsPage>
     }
     await _settings.setLockPeriod(index, result.period!);
   }
+
+  // ── 逐条上锁 ────────────────────────────────────────────────────────
+
+  /// 所有「已上锁」的段里，此刻正在生效的最晚结束时刻；没有则 null。
+  static DateTime? _lockedEnd(List<LockPeriod> periods, DateTime now) {
+    DateTime? best;
+    for (final LockPeriod p in periods) {
+      if (!p.locked) continue;
+      final DateTime? e = LockSchedule(<LockPeriod>[p]).activeEnd(now);
+      if (e == null) continue;
+      if (best == null || e.isAfter(best)) best = e;
+    }
+    return best;
+  }
+
+  /// 点钥匙：允许 ↔ 禁止提前解锁。
+  ///
+  /// 只许在生效期间往「更严」的方向改；想放宽得等这一段结束。
+  /// 否则「关掉放行」这条设置会在最需要它的那一刻被随手撤掉。
+  /// 自动锁定关着时不受这条限制——那时根本没有锁，改它不会放过任何东西。
+  Future<void> _togglePeriodSkip(int index) async {
+    final List<LockPeriod> list = _settings.lockPeriods;
+    if (index < 0 || index >= list.length) return;
+    final LockPeriod p = list[index];
+    final DateTime? end =
+        LockSchedule(<LockPeriod>[p]).activeEnd(DateTime.now());
+    if (!p.allowSkip && end != null && _settings.lockEnabled) {
+      _toast('这一段正在生效，${_hhmm(end)} 后才能改回来');
+      return;
+    }
+    await _settings.setLockPeriodAllowSkip(index, !p.allowSkip);
+    if (!mounted) return;
+    _toast(p.allowSkip ? '已关闭提前解锁：到点只能等' : '已允许提前解锁');
+  }
+
+  /// 长按钥匙的出口：误把某段设成「不许放行」后，还能有条路退回来。
+  Future<void> _emergencyAllowSkip(int index) async {
+    final List<LockPeriod> list = _settings.lockPeriods;
+    if (index < 0 || index >= list.length) return;
+    if (list[index].allowSkip) return;
+    final bool? ok = await _confirm(
+      title: '紧急恢复放行',
+      body: '恢复后这一段重新显示「提前解锁本次」。自己设的限制，确定现在放开吗？',
+      confirm: '恢复',
+    );
+    if (ok != true) return;
+    await _settings.setLockPeriodAllowSkip(index, true);
+    if (!mounted) return;
+    _toast('已恢复提前解锁');
+  }
+
+  /// 点锁：没锁 → 上锁；锁着但没生效 → 解锁；锁着且生效中 → 只给一句提示。
+  Future<void> _togglePeriodLock(int index) async {
+    final List<LockPeriod> list = _settings.lockPeriods;
+    if (index < 0 || index >= list.length) return;
+    final LockPeriod p = list[index];
+    final DateTime? end =
+        LockSchedule(<LockPeriod>[p]).activeEnd(DateTime.now());
+
+    if (p.locked && end != null && _settings.lockEnabled) {
+      _toast('这一段正在生效，${_hhmm(end)} 后才能解除');
+      return;
+    }
+    if (!p.locked && p.isAllDay) {
+      final bool? ok = await _confirm(
+        title: '给全天时段上锁',
+        body: '全天时段一直在生效，上锁后在应用里就解不开了。'
+            '长按锁图标可以紧急解除 —— 那是留给你自己破例用的。',
+        confirm: '仍然上锁',
+      );
+      if (ok != true) return;
+    }
+    await _settings.setLockPeriodLocked(index, !p.locked);
+    if (!mounted) return;
+    _toast(p.locked ? '已解除保护' : '已上锁，生效期间改不了');
+  }
+
+  /// 长按锁图标的出口：给「上锁后永远解不开」的那类情况留一条路。
+  Future<void> _emergencyUnlockPeriod(int index) async {
+    final List<LockPeriod> list = _settings.lockPeriods;
+    if (index < 0 || index >= list.length) return;
+    final LockPeriod p = list[index];
+    if (!p.locked) return;
+    final bool? ok = await _confirm(
+      title: '紧急解除',
+      body: '解除后这一段在生效期间也能修改了。自己设的限制，确定现在拆掉吗？',
+      confirm: '解除',
+    );
+    if (ok != true) return;
+    await _settings.setLockPeriodLocked(index, false);
+    if (!mounted) return;
+    _toast('已解除保护');
+  }
+
+  Future<void> _toggleAppLock(AppLimit limit, {DateTime? activeEnd}) async {
+    if (limit.locked && activeEnd != null) {
+      _toast('这个应用正在限制中，${_hhmm(activeEnd)} 后才能解除');
+      return;
+    }
+    await _settings.setAppLimitLocked(limit.package, !limit.locked);
+    if (!mounted) return;
+    _toast(limit.locked ? '已解除保护' : '已上锁，限制期间改不了');
+  }
+
+  Future<void> _emergencyUnlockApp(AppLimit limit) async {
+    if (!limit.locked) return;
+    final bool? ok = await _confirm(
+      title: '紧急解除',
+      body: '解除后这个应用在限制期间也能改规则了。自己设的限制，确定现在拆掉吗？',
+      confirm: '解除',
+    );
+    if (ok != true) return;
+    await _settings.setAppLimitLocked(limit.package, false);
+    if (!mounted) return;
+    _toast('已解除保护');
+  }
+
+  void _toast(String msg) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(SnackBar(
+        content: Text(msg, style: const TextStyle(fontSize: 12.5)),
+        duration: const Duration(seconds: 2),
+        behavior: SnackBarBehavior.floating,
+      ));
+  }
+
+  Future<bool?> _confirm({
+    required String title,
+    required String body,
+    String confirm = '确定',
+  }) {
+    return showDialog<bool>(
+      context: context,
+      builder: (BuildContext ctx) => AlertDialog(
+        backgroundColor: const Color(0xFF1B2028),
+        title: Text(title,
+            style: const TextStyle(fontSize: 16, color: Colors.white)),
+        content: Text(
+          body,
+          style: const TextStyle(
+              fontSize: 13, height: 1.6, color: Colors.white70),
+        ),
+        actions: <Widget>[
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text('取消',
+                style: TextStyle(fontSize: 13, color: Colors.white54)),
+          ),
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            child: Text(confirm,
+                style: const TextStyle(fontSize: 13, color: sheetAccent)),
+          ),
+        ],
+      ),
+    );
+  }
+
+  static String _hhmm(DateTime t) =>
+      '${t.hour.toString().padLeft(2, '0')}:${t.minute.toString().padLeft(2, '0')}';
 
   static String _hoursText(int minutes) {
     if (minutes % 60 == 0) return '${minutes ~/ 60} 小时';

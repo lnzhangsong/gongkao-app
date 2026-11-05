@@ -23,6 +23,7 @@ class Settings extends ChangeNotifier {
   static const String _kLockSkipAt = 'lock_skip_at';
   static const String _kLockAutoStart = 'lock_auto_start';
   static const String _kAppLimits = 'app_limits';
+  static const String _kLockMotto = 'lock_motto';
 
   int _intervalSeconds = cardInterval.inSeconds;
   int get intervalSeconds => _intervalSeconds;
@@ -79,6 +80,19 @@ class Settings extends ChangeNotifier {
   /// 与整机锁定分开存：整机锁定管整块屏幕，这里只管某几个应用能不能打开。
   List<AppLimit> _appLimits = <AppLimit>[];
   List<AppLimit> get appLimits => List<AppLimit>.unmodifiable(_appLimits);
+
+  /// 锁屏上那一句话。空串表示不显示。
+  String _lockMotto = '';
+  String get lockMotto => _lockMotto;
+
+  /// 提供的几句模板，用户也可以自己写。
+  static const List<String> mottoTemplates = <String>[
+    '现在这一小时，只做一件事',
+    '关掉的不是手机，是想逃的那一下',
+    '熬过这一段，明天会感谢今天',
+    '先把这一套做完，再想别的',
+    '坐得住，才走得远',
+  ];
 
   /// 参与轮播的主题集合。空集合视为全部参与（兜底）。
   final Set<String> _enabledKinds = <String>{...allKinds};
@@ -137,6 +151,7 @@ class Settings extends ChangeNotifier {
       }
     }
     _lockAutoStart = prefs.getBool(_kLockAutoStart) ?? true;
+    _lockMotto = prefs.getString(_kLockMotto) ?? '';
     final List<String>? rawLimits = prefs.getStringList(_kAppLimits);
     if (rawLimits != null) {
       _appLimits = <AppLimit>[
@@ -283,10 +298,40 @@ class Settings extends ChangeNotifier {
   }
 
   /// 改某一段的开始或结束时刻（分钟数）。
+  ///
+  /// 编辑弹层只管时间，不知道「锁」和「放行」这两件事，
+  /// 所以这两个状态在这里保留，改时间不会顺手把它们重置掉。
   Future<void> setLockPeriod(int index, LockPeriod period) async {
     if (index < 0 || index >= _lockPeriods.length) return;
+    final LockPeriod old = _lockPeriods[index];
     final List<LockPeriod> next = List<LockPeriod>.of(_lockPeriods);
-    next[index] = period;
+    next[index] = period.copyWith(locked: old.locked, allowSkip: old.allowSkip);
+    _lockPeriods = next;
+    await _saveLockPeriods();
+  }
+
+  /// 单独开关某一段的「提前解锁」（关掉就是真锁死，到点只能等）。
+  Future<void> setLockPeriodAllowSkip(int index, bool allow) async {
+    if (index < 0 || index >= _lockPeriods.length) return;
+    final LockPeriod old = _lockPeriods[index];
+    if (old.allowSkip == allow) return;
+    // 只有「刚被关掉放行的这一段正处于生效中」时，才需要把已经放出去的收回。
+    // 改的是别的时间段就不该动它——否则在空档里调一条无关规则，会把人当场锁住。
+    final bool revoke = !allow &&
+        LockSchedule(<LockPeriod>[old]).activeEnd(DateTime.now()) != null;
+    final List<LockPeriod> next = List<LockPeriod>.of(_lockPeriods);
+    next[index] = old.copyWith(allowSkip: allow);
+    _lockPeriods = next;
+    await _saveLockPeriods();
+    if (revoke && _lockSkipUntil != null) await clearLockSkip();
+  }
+
+  /// 单独给某一段上锁 / 解锁。
+  Future<void> setLockPeriodLocked(int index, bool locked) async {
+    if (index < 0 || index >= _lockPeriods.length) return;
+    if (_lockPeriods[index].locked == locked) return;
+    final List<LockPeriod> next = List<LockPeriod>.of(_lockPeriods);
+    next[index] = _lockPeriods[index].copyWith(locked: locked);
     _lockPeriods = next;
     await _saveLockPeriods();
   }
@@ -308,7 +353,29 @@ class Settings extends ChangeNotifier {
     await prefs.setBool(_kLockAutoStart, on);
   }
 
+  // ── 锁屏上那句话 ────────────────────────────────────────────────────
+
+  /// 空串即「不显示」。超长直接截断，免得锁屏被一行字撑破。
+  Future<void> setLockMotto(String motto) async {
+    final String clean = motto.trim();
+    if (clean == _lockMotto) return;
+    _lockMotto = clean.length > 40 ? clean.substring(0, 40) : clean;
+    notifyListeners();
+    final SharedPreferences prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_kLockMotto, _lockMotto);
+  }
+
   // ── 应用限制 ────────────────────────────────────────────────────────
+
+  /// 单独给某一条应用规则上锁 / 解锁。
+  Future<void> setAppLimitLocked(String package, bool locked) async {
+    final int i = _appLimits.indexWhere((AppLimit l) => l.package == package);
+    if (i < 0 || _appLimits[i].locked == locked) return;
+    final List<AppLimit> next = List<AppLimit>.of(_appLimits);
+    next[i] = _appLimits[i].copyWith(locked: locked);
+    _appLimits = next;
+    await _saveAppLimits();
+  }
 
   /// 新增一条应用限用规则；同包名的旧规则直接替换。
   Future<void> addAppLimit(AppLimit limit) async {
@@ -320,12 +387,14 @@ class Settings extends ChangeNotifier {
   }
 
   /// 覆盖已有的规则（包名不可改）。
+  ///
+  /// 同上：编辑弹层不处理「锁」，上锁状态在这里保留。
   Future<void> updateAppLimit(AppLimit limit) async {
     final int i =
         _appLimits.indexWhere((AppLimit l) => l.package == limit.package);
     if (i < 0) return;
     final List<AppLimit> next = List<AppLimit>.of(_appLimits);
-    next[i] = limit;
+    next[i] = limit.copyWith(locked: _appLimits[i].locked);
     _appLimits = next;
     await _saveAppLimits();
   }
@@ -346,8 +415,18 @@ class Settings extends ChangeNotifier {
     await prefs.setStringList(_kAppLimits, raw);
     // 拦截发生在原生侧（前台轮询 + 拦截页），改完必须立刻推过去，
     // 否则要等下一次整机配置同步才生效。
-    await Kiosk.syncAppLimits(raw);
+    await _pushAppLimitConfig();
     notifyListeners();
+  }
+
+  /// 把规则推给原生。
+  ///
+  /// 拦截发生在原生侧（前台轮询 + 无障碍），改完必须立刻推过去，
+  /// 否则要等下一次整机配置同步才生效。
+  Future<void> _pushAppLimitConfig() async {
+    await Kiosk.syncAppLimits(
+      _appLimits.map((AppLimit l) => l.encode()).toList(),
+    );
   }
 
   /// 记录「本次提前解锁」：从 [at] 这一刻起，放过当时已经在跑的段，直到 [until]。

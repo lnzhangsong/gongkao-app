@@ -134,10 +134,12 @@ class Kiosk {
 
   /// 只同步应用限用规则。
   ///
-  /// 拦截在原生侧做（前台轮询 + 拦截页），规则一变就要立刻生效，
+  /// 拦截在原生侧做（前台轮询 + 无障碍），规则一变就要立刻生效，
   /// 不必等整机配置整体同步一次。
   static Future<void> syncAppLimits(List<String> rules) async {
-    await _invoke<void>('syncAppLimits', <String, Object?>{'rules': rules});
+    await _invoke<void>('syncAppLimits', <String, Object?>{
+      'rules': rules,
+    });
   }
 
   /// 可用于限制的已安装应用（有启动图标、非系统框架类），按名称排序。
